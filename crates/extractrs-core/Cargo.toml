@@ -1,0 +1,16 @@
+[package]
+name = "extractrs-core"
+description = "Pure-Rust exact fractional-pixel coverage fraction engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+geo = "0.32"
+geo-types = "0.7"
+ndarray = "0.17"
+thiserror = "2"
+
+[dev-dependencies]
+proptest = "1"
+approx = "0.5"

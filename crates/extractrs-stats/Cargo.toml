@@ -1,0 +1,13 @@
+[package]
+name = "extractrs-stats"
+description = "Statistical accumulators for zonal statistics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ordered-float = "4"
+thiserror = "2"
+
+[dev-dependencies]
+approx = "0.5"
