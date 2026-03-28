@@ -1,0 +1,17 @@
+[package]
+name = "extractrs-python"
+description = "Python bindings for extractrs: fast exact zonal statistics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "_extractrs"
+crate-type = ["cdylib"]
+
+[dependencies]
+extractrs-core = { path = "../extractrs-core" }
+extractrs-stats = { path = "../extractrs-stats" }
+pyo3 = { version = "0.28", features = ["extension-module"] }
+ndarray = "0.17"
+numpy = "0.28"

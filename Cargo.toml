@@ -1,9 +1,10 @@
 [workspace]
 members = [
-    "crates/extractrs-core",
-    "crates/extractrs-stats",
-    "crates/extractrs-io",
-    "crates/extractrs-pipeline",
+    "extractrs-core",
+    "extractrs-stats",
+    "extractrs-io",
+    "extractrs-pipeline",
+    "extractrs-python",
 ]
 resolver = "2"
 

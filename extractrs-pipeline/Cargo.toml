@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [[example]]
 name = "validate"
-path = "../../validation/run_extractrs.rs"
+path = "../validation/run_extractrs.rs"
 
 [dependencies]
 extractrs-core = { path = "../extractrs-core" }
