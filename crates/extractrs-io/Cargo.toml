@@ -1,0 +1,17 @@
+[package]
+name = "extractrs-io"
+description = "I/O layer for extractrs: shapefile, NetCDF, OPeNDAP/NCSS support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+extractrs-core = { path = "../extractrs-core" }
+gdal = "0.19"
+netcdf = { version = "0.12", features = ["ndarray"] }
+ndarray = "0.17"
+proj = "0.28"
+reqwest = { version = "0.12", features = ["blocking"] }
+thiserror = "2"
+chrono = "0.4"
+csv = "1"

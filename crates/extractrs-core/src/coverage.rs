@@ -160,8 +160,8 @@ fn next_chain_index(
     let current_stop = chains[current_idx].stop;
     let mut best_idx = first_idx;
     let mut best_dist = perimeter_distance_ccw(
-        chains[first_idx].start,
         current_stop,
+        chains[first_idx].start,
         total_perimeter,
     );
 
@@ -169,7 +169,7 @@ fn next_chain_index(
         if i == current_idx || chain.visited {
             continue;
         }
-        let dist = perimeter_distance_ccw(chain.start, current_stop, total_perimeter);
+        let dist = perimeter_distance_ccw(current_stop, chain.start, total_perimeter);
         if dist < best_dist {
             best_dist = dist;
             best_idx = i;

@@ -491,15 +491,21 @@ mod tests {
 
         let result = raster_cell_intersection(&grid, &exterior, &[]);
 
-        // Total coverage should equal triangle area = 2.0 (sum of fractions
-        // across all cells). The multi-cell traversal algorithm is complex;
-        // validate that we get a reasonable result > 0.
-        let total: f32 = result.fractions.iter().sum();
+        let (rows, cols) = result.fractions.dim();
+        let mut total = 0.0f32;
+        for r in 0..rows {
+            for c in 0..cols {
+                let f = result.fractions[[r, c]];
+                eprintln!("  [{r},{c}] = {f:.6}");
+                total += f;
+            }
+        }
+        eprintln!("  TOTAL = {total:.6} (expected 2.000)");
+        eprintln!("  ERROR = {:.6}", (total - 2.0).abs());
+
         assert!(
-            total > 0.0,
-            "total coverage = {total}, expected > 0"
+            (total - 2.0).abs() < 0.01,
+            "total coverage = {total}, expected 2.0"
         );
-        // TODO: Once full ring assembly with boundary segments is implemented,
-        // tighten this to assert!(total - 2.0).abs() < 0.1)
     }
 }
