@@ -27,3 +27,5 @@ __pycache__/
 *.so
 *.egg-info/
 dist/
+uv.lock
+.ipynb_checkpoints/
