@@ -1,5 +1,24 @@
 # extractrs
 
+```
+                          .                                    .           
+                        .o8                                  .o8           
+ .ooooo.  oooo    ooo .o888oo oooo d8b  .oooo.    .ooooo.  .o888oo oooo d8b
+d88' `88b  `88b..8P'    888   `888""8P `P  )88b  d88' `"Y8   888   `888""8P
+888ooo888    Y888'      888    888      .oP"888  888         888    888    
+888    .o  .o8"'88b     888 .  888     d8(  888  888   .o8   888 .  888    
+`Y8bod8P' o88'   888o   "888" d888b    `Y888""8o `Y8bod8P'   "888" d888b   
+                                                                           
+                                                                           
+                                                                           
+                                                                           
+                                                                           
+ .oooo.o                                                                   
+d88(  "8                                                                   
+`"Y88b.                                                                    
+o.  )88b                                                                   
+8""888P'
+```
 Fast exact zonal statistics for xarray — backend powered by Rust.
 
 ## Install
