@@ -204,6 +204,7 @@ impl CoverageCache {
 /// Returns:
 ///     CoverageCache object
 #[pyfunction]
+#[allow(clippy::too_many_arguments)]
 fn build_cache(
     wkb_list: Vec<Vec<u8>>,
     id_list: Vec<i64>,
