@@ -153,7 +153,7 @@ fn main() -> Result<()> {
         // Clean up
         std::fs::remove_file(&nc_path).ok();
 
-        if day_count % 10 == 0 {
+        if day_count.is_multiple_of(10) {
             eprintln!(
                 "  processed {}/{} days, avg proc {:.4}s/day",
                 day_count,
