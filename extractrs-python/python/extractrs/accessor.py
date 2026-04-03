@@ -189,7 +189,7 @@ class ExtractrsDatasetAccessor:
     def __init__(self, ds):
         self._ds = ds
 
-    def zonal_stats(self, gdf, stat="mean", id_col=None, var=None, vars=None):
+    def zonal_stats(self, gdf, stat="mean", id_col=None, var=None, vars=None, method="exact"):
         """Compute zonal statistics for each geometry in a GeoDataFrame.
 
         Parameters
@@ -206,6 +206,9 @@ class ExtractrsDatasetAccessor:
         vars : list of str, optional
             Subset of data variables to process. If neither var nor vars
             is given, all data variables are processed.
+        method : str, default "exact"
+            Coverage method: "exact" for fractional pixel coverage,
+            "center" for cell-center point-in-polygon (binary 0/1).
 
         Returns
         -------
@@ -218,7 +221,7 @@ class ExtractrsDatasetAccessor:
         ref_da = self._ds[data_vars[0]]
         xmin, ymin, xmax, ymax, dx, dy = _extract_grid_params(ref_da)
         wkb_list, id_list, gdf_proj = _prepare_geometries(gdf, ref_da, id_col)
-        cache = build_cache(wkb_list, id_list, xmin, ymin, xmax, ymax, dx, dy)
+        cache = build_cache(wkb_list, id_list, xmin, ymin, xmax, ymax, dx, dy, method)
 
         results = {}
         for vname in data_vars:
@@ -235,7 +238,7 @@ class ExtractrsDataArrayAccessor:
     def __init__(self, da):
         self._da = da
 
-    def zonal_stats(self, gdf, stat="mean", id_col=None):
+    def zonal_stats(self, gdf, stat="mean", id_col=None, method="exact"):
         """Compute zonal statistics for each geometry in a GeoDataFrame.
 
         Parameters
@@ -247,6 +250,9 @@ class ExtractrsDataArrayAccessor:
             "variance", "stdev".
         id_col : str, optional
             Column in gdf to use as basin IDs. If None, uses integer index.
+        method : str, default "exact"
+            Coverage method: "exact" for fractional pixel coverage,
+            "center" for cell-center point-in-polygon (binary 0/1).
 
         Returns
         -------
@@ -255,5 +261,5 @@ class ExtractrsDataArrayAccessor:
         """
         xmin, ymin, xmax, ymax, dx, dy = _extract_grid_params(self._da)
         wkb_list, id_list, gdf_proj = _prepare_geometries(gdf, self._da, id_col)
-        cache = build_cache(wkb_list, id_list, xmin, ymin, xmax, ymax, dx, dy)
+        cache = build_cache(wkb_list, id_list, xmin, ymin, xmax, ymax, dx, dy, method)
         return _run_zonal(self._da, cache, id_list, id_col, stat)

@@ -1,4 +1,12 @@
 use extractrs_core::prelude::*;
+
+/// Coverage computation method.
+enum CoverageMethod {
+    /// Exact fractional coverage via polygon-cell intersection.
+    Exact,
+    /// Binary cell-center point-in-polygon (1.0 if center inside, else 0.0).
+    Center,
+}
 use extractrs_stats::accumulator::*;
 use extractrs_stats::variance::*;
 use ndarray::Array2;
@@ -200,10 +208,12 @@ impl CoverageCache {
 ///     id_list: list of integer IDs (same length as wkb_list)
 ///     xmin, ymin, xmax, ymax: grid extent
 ///     dx, dy: cell size
+///     method: "exact" (default) for fractional coverage, "center" for cell-center PIP
 ///
 /// Returns:
 ///     CoverageCache object
 #[pyfunction]
+#[pyo3(signature = (wkb_list, id_list, xmin, ymin, xmax, ymax, dx, dy, method="exact"))]
 #[allow(clippy::too_many_arguments)]
 fn build_cache(
     wkb_list: Vec<Vec<u8>>,
@@ -214,12 +224,24 @@ fn build_cache(
     ymax: f64,
     dx: f64,
     dy: f64,
+    method: &str,
 ) -> PyResult<CoverageCache> {
     if wkb_list.len() != id_list.len() {
         return Err(PyValueError::new_err(
             "wkb_list and id_list must have the same length",
         ));
     }
+
+    let coverage_method = match method {
+        "exact" => CoverageMethod::Exact,
+        "center" => CoverageMethod::Center,
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "Unknown method '{}'. Supported: 'exact', 'center'",
+                method
+            )))
+        }
+    };
 
     let grid = Grid::<Bounded>::new(BBox::new(xmin, ymin, xmax, ymax), dx, dy);
     let mut entries = Vec::with_capacity(wkb_list.len());
@@ -235,7 +257,14 @@ fn build_cache(
             }
 
             let hole_slices: Vec<Vec<Coord>> = part.holes.clone();
-            let result = raster_cell_intersection(&grid, &part.exterior, &hole_slices);
+            let result = match coverage_method {
+                CoverageMethod::Exact => {
+                    raster_cell_intersection(&grid, &part.exterior, &hole_slices)
+                }
+                CoverageMethod::Center => {
+                    raster_cell_center(&grid, &part.exterior, &hole_slices)
+                }
+            };
 
             if result.fractions.dim() == (0, 0) {
                 continue;
