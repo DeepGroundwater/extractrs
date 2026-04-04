@@ -60,7 +60,7 @@ pub fn raster_cell_intersection(
         };
     }
 
-    // Build geo::Polygon for PIP queries in flood fill
+    // Build geo::Polygon for PIP queries in flood fill (exterior ring)
     let geo_polygon = build_geo_polygon(exterior_ring, interior_rings);
 
     // Process exterior ring
@@ -74,13 +74,19 @@ pub fn raster_cell_intersection(
     );
 
     // Process interior rings (holes)
+    // For holes, the flood fill must use a polygon built from just the hole
+    // ring (not the full polygon). This ensures that cells inside the hole
+    // are classified as INTERIOR (and subtracted), while cells outside the
+    // hole but inside the main polygon are correctly classified as EXTERIOR
+    // (0.0, so subtracting them is a no-op).
     for hole in interior_rings {
+        let hole_polygon = build_ring_polygon(hole);
         process_ring(
             &sub_grid,
             hole,
             false, // interior
             true,
-            &geo_polygon,
+            &hole_polygon,
             &mut results,
         );
     }
@@ -380,6 +386,20 @@ fn build_geo_polygon(exterior: &[Coord], interiors: &[Vec<Coord>]) -> Polygon<f6
     Polygon::new(ext_ls, int_ls)
 }
 
+/// Build a simple polygon from a single ring (no holes).
+///
+/// Used for interior ring (hole) processing: the flood fill for a hole
+/// needs to test containment within the hole ring itself, not the full
+/// polygon. Otherwise, cells inside the main polygon but outside the
+/// hole are incorrectly classified as interior to the hole.
+fn build_ring_polygon(ring: &[Coord]) -> Polygon<f64> {
+    let ls: LineString<f64> = ring
+        .iter()
+        .map(|c| GeoCoord { x: c.x, y: c.y })
+        .collect();
+    Polygon::new(ls, vec![])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,17 +515,116 @@ mod tests {
         let mut total = 0.0f32;
         for r in 0..rows {
             for c in 0..cols {
-                let f = result.fractions[[r, c]];
-                eprintln!("  [{r},{c}] = {f:.6}");
-                total += f;
+                total += result.fractions[[r, c]];
             }
         }
-        eprintln!("  TOTAL = {total:.6} (expected 2.000)");
-        eprintln!("  ERROR = {:.6}", (total - 2.0).abs());
 
         assert!(
             (total - 2.0).abs() < 0.01,
             "total coverage = {total}, expected 2.0"
+        );
+    }
+
+    #[test]
+    fn test_polygon_with_hole() {
+        // 6x6 grid, 1.0 spacing
+        let grid = make_grid(0.0, 0.0, 6.0, 6.0, 1.0, 1.0);
+
+        // Exterior: covers entire grid (CCW)
+        let exterior = vec![
+            Coord::new(0.0, 0.0),
+            Coord::new(6.0, 0.0),
+            Coord::new(6.0, 6.0),
+            Coord::new(0.0, 6.0),
+            Coord::new(0.0, 0.0),
+        ];
+
+        // Hole: 2x2 in the center (CW for hole, but code normalizes)
+        let hole = vec![
+            Coord::new(2.0, 2.0),
+            Coord::new(4.0, 2.0),
+            Coord::new(4.0, 4.0),
+            Coord::new(2.0, 4.0),
+            Coord::new(2.0, 2.0),
+        ];
+
+        let result = raster_cell_intersection(&grid, &exterior, &[hole]);
+
+        let (rows, cols) = result.fractions.dim();
+        assert_eq!((rows, cols), (6, 6));
+
+        // Cells outside the hole should be 1.0
+        for r in 0..6 {
+            for c in 0..6 {
+                let f = result.fractions[[r, c]];
+                // Grid rows go top-down: row 0 = y 5..6, row 5 = y 0..1
+                // Hole covers y=2..4 (rows 2..4) and x=2..4 (cols 2..4)
+                let in_hole = r >= 2 && r <= 3 && c >= 2 && c <= 3;
+                if in_hole {
+                    assert!(
+                        f.abs() < 1e-5,
+                        "hole cell [{r},{c}] = {f}, expected 0.0"
+                    );
+                } else {
+                    assert!(
+                        (f - 1.0).abs() < 1e-5,
+                        "non-hole cell [{r},{c}] = {f}, expected 1.0"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_polygon_with_offset_hole() {
+        // Test a hole that doesn't align with cell boundaries —
+        // cells outside the hole should NOT have their coverage reduced.
+        let grid = make_grid(0.0, 0.0, 8.0, 8.0, 1.0, 1.0);
+
+        // Exterior: covers entire grid
+        let exterior = vec![
+            Coord::new(0.0, 0.0),
+            Coord::new(8.0, 0.0),
+            Coord::new(8.0, 8.0),
+            Coord::new(0.0, 8.0),
+            Coord::new(0.0, 0.0),
+        ];
+
+        // Small circular-ish hole in the center (doesn't align with cell boundaries)
+        let hole = vec![
+            Coord::new(3.5, 3.5),
+            Coord::new(4.5, 3.5),
+            Coord::new(4.5, 4.5),
+            Coord::new(3.5, 4.5),
+            Coord::new(3.5, 3.5),
+        ];
+
+        let result = raster_cell_intersection(&grid, &exterior, &[hole]);
+
+        let (rows, cols) = result.fractions.dim();
+        let mut total: f32 = 0.0;
+        for r in 0..rows {
+            for c in 0..cols {
+                total += result.fractions[[r, c]];
+            }
+        }
+
+        // Total coverage should be 64 - 1 = 63
+        assert!(
+            (total - 63.0).abs() < 0.01,
+            "total coverage = {total}, expected 63.0"
+        );
+
+        // Corner cells (far from hole) should be exactly 1.0
+        assert!(
+            (result.fractions[[0, 0]] - 1.0).abs() < 1e-5,
+            "corner cell [0,0] = {}, expected 1.0",
+            result.fractions[[0, 0]]
+        );
+        assert!(
+            (result.fractions[[7, 7]] - 1.0).abs() < 1e-5,
+            "corner cell [7,7] = {}, expected 1.0",
+            result.fractions[[7, 7]]
         );
     }
 }
