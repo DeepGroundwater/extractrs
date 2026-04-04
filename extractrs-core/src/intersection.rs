@@ -6,6 +6,7 @@ use crate::floodfill::{FloodFill, EXTERIOR, FILLABLE, INTERIOR};
 use crate::grid::{Bounded, Grid, Infinite};
 use crate::measures;
 use crate::side::Side;
+use geo::Contains;
 use geo_types::{Coord as GeoCoord, LineString, Polygon};
 use ndarray::Array2;
 
@@ -325,6 +326,47 @@ fn traverse_cells(
     }
 }
 
+/// Compute cell-center coverage of each grid cell by a polygon.
+///
+/// For each cell in the polygon's bounding box, tests whether the cell
+/// center falls inside the polygon. Cells whose center is inside get
+/// coverage = 1.0; all others get 0.0. No fractional coverage is computed.
+///
+/// This matches the rasterization approach used by xarray-spatial and
+/// other scanline-based zonal statistics tools.
+pub fn raster_cell_center(
+    raster_grid: &Grid<Bounded>,
+    exterior_ring: &[Coord],
+    interior_rings: &[Vec<Coord>],
+) -> CoverageResult {
+    let geom_bbox = ring_bbox(exterior_ring);
+    let sub_grid = raster_grid.shrink_to_fit(&geom_bbox);
+    if sub_grid.is_empty() {
+        return CoverageResult {
+            fractions: Array2::zeros((0, 0)),
+            grid: sub_grid,
+        };
+    }
+
+    let geo_polygon = build_geo_polygon(exterior_ring, interior_rings);
+    let mut results = Array2::zeros((sub_grid.rows(), sub_grid.cols()));
+
+    for row in 0..sub_grid.rows() {
+        let y = sub_grid.y_for_row(row);
+        for col in 0..sub_grid.cols() {
+            let x = sub_grid.x_for_col(col);
+            if geo_polygon.contains(&geo_types::Point(geo_types::Coord { x, y })) {
+                results[[row, col]] = 1.0;
+            }
+        }
+    }
+
+    CoverageResult {
+        fractions: results,
+        grid: sub_grid,
+    }
+}
+
 /// Fast path for axis-aligned rectangular polygons.
 ///
 /// Computes coverage by simple box-box intersection for each cell.
@@ -477,6 +519,205 @@ mod tests {
         let result = raster_cell_intersection(&grid, &exterior, &[]);
         assert_eq!(result.fractions.dim(), (0, 0));
     }
+
+    // --- raster_cell_center tests ---
+
+    #[test]
+    fn test_center_full_coverage() {
+        // Polygon covers entire 4x4 grid — all cell centers inside.
+        let grid = make_grid(0.0, 0.0, 4.0, 4.0, 1.0, 1.0);
+        let exterior = vec![
+            Coord::new(0.0, 0.0),
+            Coord::new(4.0, 0.0),
+            Coord::new(4.0, 4.0),
+            Coord::new(0.0, 4.0),
+            Coord::new(0.0, 0.0),
+        ];
+
+        let result = raster_cell_center(&grid, &exterior, &[]);
+        assert_eq!(result.fractions.dim(), (4, 4));
+        for row in 0..4 {
+            for col in 0..4 {
+                assert_eq!(
+                    result.fractions[[row, col]], 1.0,
+                    "cell [{row},{col}] should be 1.0"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_center_half_coverage() {
+        // Polygon covers left half of a 4x4 grid.
+        // shrink_to_fit clips the result to the polygon bbox [0,2]x[0,4] → 2 cols, 4 rows.
+        // geo::Contains is strict (boundary excluded), so cell centers at
+        // x=0.5 are inside but x=1.5 is also inside (< 2.0 boundary).
+        let grid = make_grid(0.0, 0.0, 4.0, 4.0, 1.0, 1.0);
+        let exterior = vec![
+            Coord::new(0.0, 0.0),
+            Coord::new(2.0, 0.0),
+            Coord::new(2.0, 4.0),
+            Coord::new(0.0, 4.0),
+            Coord::new(0.0, 0.0),
+        ];
+
+        let result = raster_cell_center(&grid, &exterior, &[]);
+
+        // Sub-grid is clipped to polygon bbox: 2 cols × 4 rows
+        assert_eq!(result.fractions.dim(), (4, 2));
+
+        for row in 0..4 {
+            // col 0 center at x=0.5 → strictly inside
+            assert_eq!(result.fractions[[row, 0]], 1.0, "row {row} col 0");
+            // col 1 center at x=1.5 → strictly inside (boundary at x=2.0)
+            assert_eq!(result.fractions[[row, 1]], 1.0, "row {row} col 1");
+        }
+    }
+
+    #[test]
+    fn test_center_binary_only() {
+        // A polygon covering 50% of a cell should still produce 1.0
+        // (center is inside) or 0.0 (center is outside) — never 0.5.
+        let grid = make_grid(0.0, 0.0, 2.0, 2.0, 1.0, 1.0);
+        // Small rectangle: covers top-left quadrant of cell (0,0).
+        // Cell center at (0.5, 1.5) is inside this box → 1.0.
+        let exterior = vec![
+            Coord::new(0.0, 1.0),
+            Coord::new(1.0, 1.0),
+            Coord::new(1.0, 2.0),
+            Coord::new(0.0, 2.0),
+            Coord::new(0.0, 1.0),
+        ];
+
+        let result = raster_cell_center(&grid, &exterior, &[]);
+
+        for row in 0..result.fractions.dim().0 {
+            for col in 0..result.fractions.dim().1 {
+                let f = result.fractions[[row, col]];
+                assert!(
+                    f == 0.0 || f == 1.0,
+                    "cell [{row},{col}] = {f}, expected 0.0 or 1.0"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_center_empty_intersection() {
+        // Polygon outside grid → empty result.
+        let grid = make_grid(0.0, 0.0, 4.0, 4.0, 1.0, 1.0);
+        let exterior = vec![
+            Coord::new(10.0, 10.0),
+            Coord::new(12.0, 10.0),
+            Coord::new(12.0, 12.0),
+            Coord::new(10.0, 12.0),
+            Coord::new(10.0, 10.0),
+        ];
+
+        let result = raster_cell_center(&grid, &exterior, &[]);
+        assert_eq!(result.fractions.dim(), (0, 0));
+    }
+
+    #[test]
+    fn test_center_triangle() {
+        // Right triangle: (0,0)-(4,0)-(0,4). On a 4x4 grid, cell centers
+        // below the hypotenuse (y < 4-x) are inside.
+        let grid = make_grid(0.0, 0.0, 4.0, 4.0, 1.0, 1.0);
+        let exterior = vec![
+            Coord::new(0.0, 0.0),
+            Coord::new(4.0, 0.0),
+            Coord::new(0.0, 4.0),
+            Coord::new(0.0, 0.0),
+        ];
+
+        let result = raster_cell_center(&grid, &exterior, &[]);
+
+        // Cell centers: (col+0.5, ymax - (row+0.5))
+        // Hypotenuse: y = 4 - x, so inside when y < 4-x (strictly).
+        // Row 0 (y=3.5): x<0.5 → col 0 only? No: 3.5 < 4-0.5=3.5 is false (boundary).
+        // geo::Contains is strict: boundary points are NOT inside.
+        // Row 3 (y=0.5): x<3.5 → cols 0,1,2 inside.
+        let total: f32 = result.fractions.iter().sum();
+        // Triangle area = 8, cells inside ≈ 6 (interior cells only, boundary excluded)
+        assert!(
+            total >= 3.0 && total <= 10.0,
+            "total = {total}, expected between 3 and 10"
+        );
+        // Every cell is binary
+        for &f in result.fractions.iter() {
+            assert!(f == 0.0 || f == 1.0, "got {f}");
+        }
+    }
+
+    #[test]
+    fn test_center_with_hole() {
+        // Square with a hole: exterior 0..6, hole 2..4.
+        // On a 6x6 grid, cell centers inside the hole should be 0.0.
+        let grid = make_grid(0.0, 0.0, 6.0, 6.0, 1.0, 1.0);
+        let exterior = vec![
+            Coord::new(0.0, 0.0),
+            Coord::new(6.0, 0.0),
+            Coord::new(6.0, 6.0),
+            Coord::new(0.0, 6.0),
+            Coord::new(0.0, 0.0),
+        ];
+        let hole = vec![
+            Coord::new(2.0, 2.0),
+            Coord::new(4.0, 2.0),
+            Coord::new(4.0, 4.0),
+            Coord::new(2.0, 4.0),
+            Coord::new(2.0, 2.0),
+        ];
+
+        let result = raster_cell_center(&grid, &exterior, &[hole]);
+
+        // All cells should be 1.0 except the 4 cells whose centers
+        // fall inside the hole (x=2.5,3.5 and y=2.5,3.5).
+        // Grid rows: row 0 → y=5.5, row 5 → y=0.5
+        // Hole y=2..4 means rows with center y in (2,4): y=2.5 (row 3), y=3.5 (row 2)
+        // Hole x=2..4 means cols with center x in (2,4): x=2.5 (col 2), x=3.5 (col 3)
+        let total: f32 = result.fractions.iter().sum();
+        assert_eq!(total, 32.0, "36 cells - 4 hole cells = 32");
+
+        // Verify hole cells are 0
+        assert_eq!(result.fractions[[2, 2]], 0.0, "hole cell [2,2]");
+        assert_eq!(result.fractions[[2, 3]], 0.0, "hole cell [2,3]");
+        assert_eq!(result.fractions[[3, 2]], 0.0, "hole cell [3,2]");
+        assert_eq!(result.fractions[[3, 3]], 0.0, "hole cell [3,3]");
+
+        // Verify non-hole cells are 1
+        assert_eq!(result.fractions[[0, 0]], 1.0);
+        assert_eq!(result.fractions[[5, 5]], 1.0);
+    }
+
+    #[test]
+    fn test_center_agrees_with_exact_on_interior() {
+        // For a polygon that aligns with the grid, both methods should
+        // agree: interior cells get 1.0 in both.
+        let grid = make_grid(0.0, 0.0, 4.0, 4.0, 1.0, 1.0);
+        let exterior = vec![
+            Coord::new(0.0, 0.0),
+            Coord::new(4.0, 0.0),
+            Coord::new(4.0, 4.0),
+            Coord::new(0.0, 4.0),
+            Coord::new(0.0, 0.0),
+        ];
+
+        let exact = raster_cell_intersection(&grid, &exterior, &[]);
+        let center = raster_cell_center(&grid, &exterior, &[]);
+
+        assert_eq!(exact.fractions.dim(), center.fractions.dim());
+        for row in 0..4 {
+            for col in 0..4 {
+                assert_eq!(
+                    exact.fractions[[row, col]], center.fractions[[row, col]],
+                    "mismatch at [{row},{col}]"
+                );
+            }
+        }
+    }
+
+    // --- raster_cell_intersection tests (original) ---
 
     #[test]
     fn test_triangle_polygon() {
