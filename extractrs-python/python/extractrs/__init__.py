@@ -10,7 +10,14 @@ Two coverage methods are available:
   identical to xarray-spatial's zonal statistics.
 """
 
-from extractrs._extractrs import CoverageCache, build_cache, apply_stat, apply_stat_batch
+from extractrs._extractrs import (
+    CoverageCache,
+    build_cache,
+    apply_stat,
+    apply_stat_batch,
+    apply_stat_weights,
+    apply_stat_batch_weights,
+)
 from extractrs.accessor import ExtractrsDatasetAccessor, ExtractrsDataArrayAccessor
 
 __all__ = [
@@ -18,4 +25,6 @@ __all__ = [
     "build_cache",
     "apply_stat",
     "apply_stat_batch",
+    "apply_stat_weights",
+    "apply_stat_batch_weights",
 ]
