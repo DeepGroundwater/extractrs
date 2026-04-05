@@ -168,8 +168,10 @@ fn make_accumulator(stat: &str) -> PyResult<Box<dyn StatAccumulator>> {
         "max" => Ok(Box::new(MaxAccum::default())),
         "variance" => Ok(Box::new(VarianceAccum::default())),
         "stdev" => Ok(Box::new(StdevAccum::default())),
+        "weighted_mean" => Ok(Box::new(WeightedMeanAccum::default())),
+        "weighted_sum" => Ok(Box::new(WeightedSumAccum::default())),
         _ => Err(PyValueError::new_err(format!(
-            "Unknown stat '{}'. Supported: mean, sum, count, min, max, variance, stdev",
+            "Unknown stat '{}'. Supported: mean, sum, count, min, max, variance, stdev, weighted_mean, weighted_sum",
             stat
         ))),
     }
@@ -472,6 +474,173 @@ fn apply_stat_batch<'py>(
     Ok(PyArray2::from_owned_array(py, results))
 }
 
+/// Apply a weighted statistic to a single 2D raster using the coverage cache.
+///
+/// Args:
+///     cache: CoverageCache from build_cache()
+///     raster: 2D numpy array (rows, cols) of raster values
+///     weights: 2D numpy array (rows, cols) of weight values
+///     nodata: nodata value for the raster
+///     weight_nodata: nodata value for the weights
+///     stat: statistic name ("weighted_mean", "weighted_sum", or any standard stat)
+///
+/// Returns:
+///     1D numpy array of length n_basins with the stat result per basin
+#[pyfunction]
+fn apply_stat_weights<'py>(
+    py: Python<'py>,
+    cache: &CoverageCache,
+    raster: PyReadonlyArray2<'py, f64>,
+    weights: PyReadonlyArray2<'py, f64>,
+    nodata: f64,
+    weight_nodata: f64,
+    stat: &str,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let raster = raster.as_array();
+    let weights = weights.as_array();
+    let (raster_rows, raster_cols) = raster.dim();
+    let nodata_is_nan = nodata.is_nan();
+    let wnodata_is_nan = weight_nodata.is_nan();
+    let mut results = Vec::with_capacity(cache.entries.len());
+
+    for entry in &cache.entries {
+        let mut accum = make_accumulator(stat)?;
+        let (sub_rows, sub_cols) = entry.fractions.dim();
+
+        for i in 0..sub_rows {
+            let global_row = entry.row_offset + i;
+            if global_row >= raster_rows {
+                continue;
+            }
+            for j in 0..sub_cols {
+                let global_col = entry.col_offset + j;
+                if global_col >= raster_cols {
+                    continue;
+                }
+
+                let coverage = entry.fractions[[i, j]];
+                if coverage <= 0.0 {
+                    continue;
+                }
+
+                let value = raster[[global_row, global_col]];
+                let value_defined = if nodata_is_nan {
+                    value.is_finite()
+                } else {
+                    (value - nodata).abs() > 1e-6 && value.is_finite()
+                };
+
+                let w = weights[[global_row, global_col]];
+                let weight_defined = if wnodata_is_nan {
+                    w.is_finite()
+                } else {
+                    (w - weight_nodata).abs() > 1e-6 && w.is_finite()
+                };
+
+                accum.process(&CellContribution {
+                    coverage,
+                    value,
+                    weight: w,
+                    x: 0.0,
+                    y: 0.0,
+                    value_defined,
+                    weight_defined,
+                });
+            }
+        }
+
+        results.push(stat_to_f64(accum.result()));
+    }
+
+    Ok(PyArray1::from_vec(py, results))
+}
+
+/// Apply a weighted statistic to a 3D raster (time, rows, cols) with 2D weights.
+///
+/// Args:
+///     cache: CoverageCache from build_cache()
+///     raster: 3D numpy array (time, rows, cols)
+///     weights: 2D numpy array (rows, cols) — same weights for all timesteps
+///     nodata: nodata value for the raster
+///     weight_nodata: nodata value for the weights
+///     stat: statistic name
+///
+/// Returns:
+///     2D numpy array (time, n_basins)
+#[pyfunction]
+fn apply_stat_batch_weights<'py>(
+    py: Python<'py>,
+    cache: &CoverageCache,
+    raster: numpy::PyReadonlyArray3<'py, f64>,
+    weights: PyReadonlyArray2<'py, f64>,
+    nodata: f64,
+    weight_nodata: f64,
+    stat: &str,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let raster = raster.as_array();
+    let weights = weights.as_array();
+    let (n_times, raster_rows, raster_cols) = raster.dim();
+    let nodata_is_nan = nodata.is_nan();
+    let wnodata_is_nan = weight_nodata.is_nan();
+    let n_basins = cache.entries.len();
+    let mut results = Array2::<f64>::from_elem((n_times, n_basins), f64::NAN);
+
+    for t in 0..n_times {
+        let slice = raster.slice(ndarray::s![t, .., ..]);
+
+        for (b, entry) in cache.entries.iter().enumerate() {
+            let mut accum = make_accumulator(stat)?;
+            let (sub_rows, sub_cols) = entry.fractions.dim();
+
+            for i in 0..sub_rows {
+                let global_row = entry.row_offset + i;
+                if global_row >= raster_rows {
+                    continue;
+                }
+                for j in 0..sub_cols {
+                    let global_col = entry.col_offset + j;
+                    if global_col >= raster_cols {
+                        continue;
+                    }
+
+                    let coverage = entry.fractions[[i, j]];
+                    if coverage <= 0.0 {
+                        continue;
+                    }
+
+                    let value = slice[[global_row, global_col]];
+                    let value_defined = if nodata_is_nan {
+                        value.is_finite()
+                    } else {
+                        (value - nodata).abs() > 1e-6 && value.is_finite()
+                    };
+
+                    let w = weights[[global_row, global_col]];
+                    let weight_defined = if wnodata_is_nan {
+                        w.is_finite()
+                    } else {
+                        (w - weight_nodata).abs() > 1e-6 && w.is_finite()
+                    };
+
+                    accum.process(&CellContribution {
+                        coverage,
+                        value,
+                        weight: w,
+                        x: 0.0,
+                        y: 0.0,
+                        value_defined,
+                        weight_defined,
+                    });
+                }
+            }
+
+            results[[t, b]] = stat_to_f64(accum.result());
+        }
+    }
+
+    Ok(PyArray2::from_owned_array(py, results))
+}
+
 /// extractrs: Fast exact zonal statistics — Rust engine.
 #[pymodule]
 fn _extractrs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -479,5 +648,7 @@ fn _extractrs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(build_cache, m)?)?;
     m.add_function(wrap_pyfunction!(apply_stat, m)?)?;
     m.add_function(wrap_pyfunction!(apply_stat_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(apply_stat_weights, m)?)?;
+    m.add_function(wrap_pyfunction!(apply_stat_batch_weights, m)?)?;
     Ok(())
 }

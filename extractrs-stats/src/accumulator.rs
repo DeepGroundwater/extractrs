@@ -160,3 +160,62 @@ impl StatAccumulator for MaxAccum {
         "max"
     }
 }
+
+/// Weighted sum: Σ(x_i * c_i * w_i).
+///
+/// Port of exactextract's weighted_sum (raster_stats.h: m_sum_xiciwi).
+/// Both value and weight must be defined for a cell to contribute.
+#[derive(Debug, Default)]
+pub struct WeightedSumAccum {
+    sum_xiciwi: f64,
+}
+
+impl StatAccumulator for WeightedSumAccum {
+    fn process(&mut self, cell: &CellContribution) {
+        if cell.value_defined && cell.weight_defined {
+            self.sum_xiciwi += cell.value * cell.coverage as f64 * cell.weight;
+        }
+    }
+
+    fn result(&self) -> StatValue {
+        StatValue::Float(self.sum_xiciwi)
+    }
+
+    fn name(&self) -> &str {
+        "weighted_sum"
+    }
+}
+
+/// Weighted mean: Σ(x_i * c_i * w_i) / Σ(c_i * w_i).
+///
+/// 1:1 port of exactextract's weighted_mean (raster_stats.h).
+/// Accumulates the same two terms as the C++:
+///   - sum_ciwi   = Σ(c_i * w_i)       (denominator / weighted_count)
+///   - sum_xiciwi = Σ(x_i * c_i * w_i) (numerator / weighted_sum)
+#[derive(Debug, Default)]
+pub struct WeightedMeanAccum {
+    sum_ciwi: f64,
+    sum_xiciwi: f64,
+}
+
+impl StatAccumulator for WeightedMeanAccum {
+    fn process(&mut self, cell: &CellContribution) {
+        if cell.value_defined && cell.weight_defined {
+            let ciwi = cell.coverage as f64 * cell.weight;
+            self.sum_ciwi += ciwi;
+            self.sum_xiciwi += cell.value * ciwi;
+        }
+    }
+
+    fn result(&self) -> StatValue {
+        if self.sum_ciwi > 0.0 {
+            StatValue::Float(self.sum_xiciwi / self.sum_ciwi)
+        } else {
+            StatValue::OptFloat(None)
+        }
+    }
+
+    fn name(&self) -> &str {
+        "weighted_mean"
+    }
+}

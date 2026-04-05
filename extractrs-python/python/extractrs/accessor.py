@@ -56,31 +56,38 @@ def _get_crs(obj):
         return None
 
 
+def _is_geographic(crs):
+    """Check if a CRS is geographic (lat/lon, e.g. EPSG:4326)."""
+    if crs is None:
+        return False
+    try:
+        return crs.is_geographic
+    except AttributeError:
+        return False
+
+
 def _prepare_geometries(gdf, obj, id_col):
     """Prepare WKB list and ID list from a GeoDataFrame.
 
-    Handles CRS reprojection if rioxarray is available and CRS differs.
+    Raises an error if the raster and geometry CRS differ — the caller
+    is responsible for ensuring CRS alignment before calling zonal_stats.
     """
     raster_crs = _get_crs(obj)
     geom_crs = gdf.crs
 
     if raster_crs is not None and geom_crs is not None:
         if not geom_crs.equals(raster_crs):
-            warnings.warn(
-                f"extractrs: Reprojecting geometries from {geom_crs} to {raster_crs}",
-                UserWarning,
-                stacklevel=3,
+            raise ValueError(
+                f"CRS mismatch: geometries are in {geom_crs} but raster is in "
+                f"{raster_crs}. Reproject your GeoDataFrame to match the raster "
+                f"CRS before calling zonal_stats()."
             )
-            gdf = gdf.to_crs(raster_crs)
     elif raster_crs is not None and geom_crs is None:
         warnings.warn(
             "extractrs: GeoDataFrame has no CRS set. Assuming it matches the raster CRS.",
             UserWarning,
             stacklevel=3,
         )
-    elif raster_crs is None and geom_crs is not None:
-        # No rioxarray or no CRS on raster — can't check
-        pass
 
     wkb_list = [geom.wkb for geom in gdf.geometry]
 
@@ -90,6 +97,23 @@ def _prepare_geometries(gdf, obj, id_col):
         id_list = list(range(len(gdf)))
 
     return wkb_list, id_list, gdf
+
+
+def _check_geographic_crs(obj, stat):
+    """Warn if using a non-weighted stat on a geographic CRS."""
+    crs = _get_crs(obj)
+    if not _is_geographic(crs):
+        return
+    if stat in ("weighted_mean", "weighted_sum"):
+        return
+    warnings.warn(
+        f"extractrs: Raster has a geographic CRS ({crs}). Cell areas vary by "
+        f"latitude, so stat='{stat}' will produce biased results. Use "
+        f"stat='weighted_mean' with area weights via apply_stat_weights() "
+        f"or apply_stat_batch_weights() for correct area-weighted statistics.",
+        UserWarning,
+        stacklevel=3,
+    )
 
 
 def _find_data_vars(ds, var=None, vars=None):
@@ -195,10 +219,11 @@ class ExtractrsDatasetAccessor:
         Parameters
         ----------
         gdf : geopandas.GeoDataFrame
-            Polygons to compute statistics for.
+            Polygons to compute statistics for. Must be in the same CRS
+            as the raster.
         stat : str
             Statistic to compute: "mean", "sum", "count", "min", "max",
-            "variance", "stdev".
+            "variance", "stdev", "weighted_mean", "weighted_sum".
         id_col : str, optional
             Column in gdf to use as basin IDs. If None, uses integer index.
         var : str, optional
@@ -217,8 +242,8 @@ class ExtractrsDatasetAccessor:
         """
         data_vars = _find_data_vars(self._ds, var=var, vars=vars)
 
-        # Use the first data variable to extract grid params and build cache
         ref_da = self._ds[data_vars[0]]
+        _check_geographic_crs(ref_da, stat)
         xmin, ymin, xmax, ymax, dx, dy = _extract_grid_params(ref_da)
         wkb_list, id_list, gdf_proj = _prepare_geometries(gdf, ref_da, id_col)
         cache = build_cache(wkb_list, id_list, xmin, ymin, xmax, ymax, dx, dy, method)
@@ -244,10 +269,11 @@ class ExtractrsDataArrayAccessor:
         Parameters
         ----------
         gdf : geopandas.GeoDataFrame
-            Polygons to compute statistics for.
+            Polygons to compute statistics for. Must be in the same CRS
+            as the raster.
         stat : str
             Statistic to compute: "mean", "sum", "count", "min", "max",
-            "variance", "stdev".
+            "variance", "stdev", "weighted_mean", "weighted_sum".
         id_col : str, optional
             Column in gdf to use as basin IDs. If None, uses integer index.
         method : str, default "exact"
@@ -259,6 +285,7 @@ class ExtractrsDataArrayAccessor:
         xarray.DataArray
             DataArray with spatial dims replaced by basin/id dimension.
         """
+        _check_geographic_crs(self._da, stat)
         xmin, ymin, xmax, ymax, dx, dy = _extract_grid_params(self._da)
         wkb_list, id_list, gdf_proj = _prepare_geometries(gdf, self._da, id_col)
         cache = build_cache(wkb_list, id_list, xmin, ymin, xmax, ymax, dx, dy, method)

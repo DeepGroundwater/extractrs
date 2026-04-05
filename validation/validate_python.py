@@ -58,22 +58,27 @@ def load_basins(shp_path, bbox_wgs84):
     return basins
 
 
-def run_exactextract(rast_sub, basins_proj):
+def run_exactextract(rast_sub, basins_proj, stat="mean", weights=None):
     """Run exactextract on a rasterio dataset + projected basins."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        results = exactextract.exact_extract(
-            rast_sub, basins_proj,
-            ops=["mean"],
+        kwargs = dict(
             include_cols=["COMID"],
             output="pandas",
+        )
+        if weights is not None:
+            kwargs["weights"] = weights
+        results = exactextract.exact_extract(
+            rast_sub, basins_proj,
+            ops=[stat],
+            **kwargs,
         )
     return results
 
 
-def run_extractrs(ds, basins, id_col="COMID", stat="mean"):
-    """Run extractrs on an xarray Dataset + GeoDataFrame."""
-    result = ds.extrs.zonal_stats(basins, stat=stat, id_col=id_col)
+def run_extractrs(ds, basins_proj, id_col="COMID", stat="mean"):
+    """Run extractrs on an xarray Dataset + GeoDataFrame (must be same CRS)."""
+    result = ds.extrs.zonal_stats(basins_proj, stat=stat, id_col=id_col)
     return result
 
 
@@ -126,32 +131,36 @@ def prepare_extractrs_dataset(nc_path, var_name, time_idx):
     return ds_slice
 
 
-def compare(ee_df, rs_ds, var_name):
+def compare(ee_df, rs_ds, var_name, stat="mean"):
     """Compare exactextract (DataFrame) vs extractrs (xarray Dataset) results."""
     # Extract extractrs results as DataFrame
     rs_vals = rs_ds[var_name].values
     rs_ids = rs_ds["COMID"].values
-    rs_df = pd.DataFrame({"COMID": rs_ids, "mean_rs": rs_vals})
+    rs_df = pd.DataFrame({"COMID": rs_ids, f"{stat}_rs": rs_vals})
 
     # Rename exactextract column
-    ee_df = ee_df.rename(columns={"mean": "mean_ee"})
+    ee_df = ee_df.rename(columns={stat: f"{stat}_ee"})
 
     # Merge on COMID
-    merged = ee_df[["COMID", "mean_ee"]].merge(rs_df, on="COMID")
+    merged = ee_df[["COMID", f"{stat}_ee"]].merge(rs_df, on="COMID")
 
     # Drop rows where either is NaN
-    merged = merged.dropna(subset=["mean_ee", "mean_rs"])
+    merged = merged.dropna(subset=[f"{stat}_ee", f"{stat}_rs"])
 
-    merged["abs_diff"] = (merged["mean_ee"] - merged["mean_rs"]).abs()
-    merged["rel_diff"] = merged["abs_diff"] / merged["mean_ee"].abs().clip(lower=1e-10) * 100
+    merged["abs_diff"] = (merged[f"{stat}_ee"] - merged[f"{stat}_rs"]).abs()
+    merged["rel_diff"] = merged["abs_diff"] / merged[f"{stat}_ee"].abs().clip(lower=1e-10) * 100
 
     return merged
 
 
-def print_report(merged, n_basins, ee_time, rs_time, rs_cache_time, n_bench):
+def print_report(merged, n_basins, ee_time, rs_time, rs_cache_time, n_bench,
+                 stat="mean", unit="°C"):
     """Print the validation report."""
+    ee_col = f"{stat}_ee"
+    rs_col = f"{stat}_rs"
+
     print("\n" + "=" * 70)
-    print("VALIDATION: extractrs (Python) vs exactextract")
+    print(f"VALIDATION: extractrs vs exactextract [{stat}]")
     print("=" * 70)
 
     # Accuracy
@@ -159,24 +168,24 @@ def print_report(merged, n_basins, ee_time, rs_time, rs_cache_time, n_bench):
     print(f"ACCURACY ({len(merged):,} matched basins)")
     print(f"{'─' * 70}")
 
-    corr = merged["mean_ee"].corr(merged["mean_rs"])
+    corr = merged[ee_col].corr(merged[rs_col])
     print(f"  Pearson R:       {corr:.10f}")
-    print(f"  Mean abs diff:   {merged['abs_diff'].mean():.6f}°C")
-    print(f"  Max abs diff:    {merged['abs_diff'].max():.6f}°C")
-    print(f"  Median abs diff: {merged['abs_diff'].median():.6f}°C")
+    print(f"  Mean abs diff:   {merged['abs_diff'].mean():.6f}{unit}")
+    print(f"  Max abs diff:    {merged['abs_diff'].max():.6f}{unit}")
+    print(f"  Median abs diff: {merged['abs_diff'].median():.6f}{unit}")
 
     for tol in [0.001, 0.01, 0.1, 0.5]:
         n_pass = (merged["abs_diff"] < tol).sum()
         pct = 100 * n_pass / len(merged)
-        print(f"  Within {tol}°C:  {n_pass:>8,}/{len(merged):,} ({pct:.2f}%)")
+        print(f"  Within {tol}{unit}:  {n_pass:>8,}/{len(merged):,} ({pct:.2f}%)")
 
     # Top mismatches
     print(f"\n  Top 5 mismatches:")
-    top = merged.nlargest(5, "abs_diff")[["COMID", "mean_ee", "mean_rs", "abs_diff"]]
+    top = merged.nlargest(5, "abs_diff")[["COMID", ee_col, rs_col, "abs_diff"]]
     for _, row in top.iterrows():
         print(f"    COMID {int(row['COMID']):>10}: "
-              f"ee={row['mean_ee']:.4f}  rs={row['mean_rs']:.4f}  "
-              f"diff={row['abs_diff']:.6f}°C")
+              f"ee={row[ee_col]:.4f}  rs={row[rs_col]:.4f}  "
+              f"diff={row['abs_diff']:.6f}{unit}")
 
     # Performance
     print(f"\n{'─' * 70}")
@@ -193,11 +202,11 @@ def print_report(merged, n_basins, ee_time, rs_time, rs_cache_time, n_bench):
     print(f"\n{'─' * 70}")
     max_diff = merged["abs_diff"].max()
     if max_diff < 0.1:
-        print(f"VERDICT: PASS — max diff {max_diff:.6f}°C < 0.1°C")
+        print(f"VERDICT: PASS — max diff {max_diff:.6f}{unit} < 0.1{unit}")
     elif max_diff < 0.5:
-        print(f"VERDICT: ACCEPTABLE — max diff {max_diff:.4f}°C < 0.5°C")
+        print(f"VERDICT: ACCEPTABLE — max diff {max_diff:.4f}{unit} < 0.5{unit}")
     else:
-        print(f"VERDICT: INVESTIGATE — max diff {max_diff:.4f}°C >= 0.5°C")
+        print(f"VERDICT: INVESTIGATE — max diff {max_diff:.4f}{unit} >= 0.5{unit}")
     print("=" * 70)
 
     return merged
@@ -225,48 +234,24 @@ def main():
     basins = load_basins(args.shp, bbox)
     print(f"  {len(basins)} basins in {time.time()-t0:.1f}s")
 
-    # ── Prepare exactextract inputs ──
-    print(f"\nPreparing exactextract raster...")
-    rast_file = rasterio.open(f"NETCDF:{args.nc}:{args.var}")
-    raster_crs = rast_file.crs
+    # ── Prepare extractrs inputs ──
+    # Build the xarray dataset first so we can use its CRS for everything
+    print(f"\nPreparing extractrs dataset...")
+    ds = prepare_extractrs_dataset(args.nc, args.var, args.time_idx)
+    raster_crs = ds.rio.crs
     basins_proj = basins.to_crs(raster_crs)
 
+    # ── Prepare exactextract inputs ──
+    print(f"\nPreparing exactextract raster...")
     tif_path, _ = prepare_exactextract_raster(
         args.nc, args.var, args.time_idx, basins_proj, OUT_DIR
     )
     rast_sub = rasterio.open(tif_path)
     print(f"  GeoTIFF: {rast_sub.width}x{rast_sub.height}")
-    rast_file.close()
-
-    # ── Prepare extractrs inputs ──
-    print(f"\nPreparing extractrs dataset...")
-    ds = prepare_extractrs_dataset(args.nc, args.var, args.time_idx)
     print(f"  Dataset: {dict(ds.dims)}")
 
-    # ── Run exactextract ──
-    print(f"\nRunning exactextract...")
-    ee_times = []
-    ee_result = None
-    for i in range(args.n_bench):
-        t0 = time.time()
-        ee_result = run_exactextract(rast_sub, basins_proj)
-        ee_times.append(time.time() - t0)
-        if i == 0:
-            print(f"  First run: {ee_times[0]*1000:.1f}ms, {len(ee_result)} basins")
-
-    ee_time = np.median(ee_times)
-    print(f"  Median: {ee_time*1000:.1f}ms ({args.n_bench} runs)")
-
-    # ── Run extractrs ──
-    print(f"\nRunning extractrs...")
-
-    # First run includes cache build
-    t0 = time.time()
-    rs_result = run_extractrs(ds, basins, stat="mean")
-    first_run = time.time() - t0
-    print(f"  First run (incl. cache): {first_run*1000:.1f}ms")
-
-    # Build cache separately for benchmarking
+    # ── Build shared extractrs cache ──
+    print(f"\nBuilding extractrs cache...")
     t0 = time.time()
     cache = extrs.build_cache(
         [geom.wkb for geom in basins_proj.geometry],
@@ -276,34 +261,113 @@ def main():
     cache_time = time.time() - t0
     print(f"  Cache build: {cache_time*1000:.1f}ms ({cache.n_basins} basins)")
 
-    # Benchmark apply_stat (cache already built)
     data_2d = ds[args.var].values.astype(np.float64)
     nodata = float(ds[args.var].attrs.get("_FillValue", -9999.0))
+
+    # ── Create weight raster (y-coordinate gradient) ──
+    # Use row index as weight — provides non-trivial spatial variation so
+    # weighted_mean differs from mean, while being trivially reproducible.
+    y_vals = ds["y"].values.astype(np.float64)
+    weight_2d = np.abs(y_vals[:, np.newaxis]) * np.ones((1, data_2d.shape[1]))
+    # Write weight GeoTIFF for exactextract
+    weight_tif = os.path.join(OUT_DIR, "weights.tif")
+    tif_meta = rasterio.open(tif_path)
+    with rasterio.open(
+        weight_tif, "w", driver="GTiff",
+        height=tif_meta.height, width=tif_meta.width, count=1,
+        dtype="float64", crs=tif_meta.crs,
+        transform=tif_meta.transform, nodata=-9999.0,
+    ) as wdst:
+        # Crop weight_2d to match the GeoTIFF subset extent
+        from rasterio.windows import from_bounds
+        win = from_bounds(
+            *tif_meta.bounds, ds.rio.transform()
+        ).round_offsets().round_lengths(op="ceil")
+        r0, c0 = int(win.row_off), int(win.col_off)
+        wdata = weight_2d[r0:r0 + tif_meta.height, c0:c0 + tif_meta.width]
+        wdst.write(wdata, 1)
+    weight_rast = rasterio.open(weight_tif)
+    tif_meta.close()
+
+    # ══════════════════════════════════════════════════════════════════════
+    # PASS 1: mean (unweighted) — existing validation
+    # ══════════════════════════════════════════════════════════════════════
+    print(f"\n{'═' * 70}")
+    print("PASS 1: mean (unweighted)")
+    print(f"{'═' * 70}")
+
+    ee_times = []
+    ee_result = None
+    for i in range(args.n_bench):
+        t0 = time.time()
+        ee_result = run_exactextract(rast_sub, basins_proj, stat="mean")
+        ee_times.append(time.time() - t0)
+    ee_time = np.median(ee_times)
+    print(f"  exactextract median: {ee_time*1000:.1f}ms")
 
     rs_times = []
     for i in range(args.n_bench):
         t0 = time.time()
         extrs.apply_stat(cache, data_2d, nodata, "mean")
         rs_times.append(time.time() - t0)
-
     rs_time = np.median(rs_times)
-    print(f"  Median apply_stat: {rs_time*1000:.3f}ms ({args.n_bench} runs)")
+    print(f"  extractrs median:    {rs_time*1000:.3f}ms")
 
-    # ── Compare ──
-    print(f"\nComparing results...")
-    merged = compare(ee_result, rs_result, args.var)
+    rs_result = run_extractrs(ds, basins_proj, stat="mean")
+    merged_mean = compare(ee_result, rs_result, args.var, stat="mean")
+    print_report(merged_mean, len(basins), ee_time, rs_time, cache_time, args.n_bench,
+                 stat="mean")
 
-    # ── Report ──
-    report = print_report(merged, len(basins), ee_time, rs_time, cache_time, args.n_bench)
+    # ══════════════════════════════════════════════════════════════════════
+    # PASS 2: weighted_mean
+    # ══════════════════════════════════════════════════════════════════════
+    print(f"\n{'═' * 70}")
+    print("PASS 2: weighted_mean (y-coordinate weights)")
+    print(f"{'═' * 70}")
+
+    ee_w_times = []
+    ee_w_result = None
+    for i in range(args.n_bench):
+        t0 = time.time()
+        ee_w_result = run_exactextract(
+            rast_sub, basins_proj, stat="weighted_mean", weights=weight_rast,
+        )
+        ee_w_times.append(time.time() - t0)
+    ee_w_time = np.median(ee_w_times)
+    print(f"  exactextract median: {ee_w_time*1000:.1f}ms")
+
+    rs_w_times = []
+    for i in range(args.n_bench):
+        t0 = time.time()
+        extrs.apply_stat_weights(cache, data_2d, weight_2d, nodata, np.nan, "weighted_mean")
+        rs_w_times.append(time.time() - t0)
+    rs_w_time = np.median(rs_w_times)
+    print(f"  extractrs median:    {rs_w_time*1000:.3f}ms")
+
+    # Build extractrs weighted result as xarray for compare()
+    rs_w_vals = extrs.apply_stat_weights(
+        cache, data_2d, weight_2d, nodata, np.nan, "weighted_mean",
+    )
+    id_list = basins_proj["COMID"].astype(np.int64).tolist()
+    id_map = dict(zip(
+        [e for e in cache.ids()], id_list,
+    ))
+    rs_w_ids = [id_map.get(i, i) for i in cache.ids()]
+    rs_w_ds = xr.Dataset({
+        args.var: xr.DataArray(
+            np.asarray(rs_w_vals), dims=["COMID"], coords={"COMID": rs_w_ids},
+        ),
+    })
+
+    merged_wmean = compare(ee_w_result, rs_w_ds, args.var, stat="weighted_mean")
+    print_report(merged_wmean, len(basins), ee_w_time, rs_w_time, cache_time, args.n_bench,
+                 stat="weighted_mean")
+
+    weight_rast.close()
 
     # ── Save CSVs ──
-    ee_result.to_csv(os.path.join(OUT_DIR, "exactextract_results.csv"), index=False)
-    rs_df = pd.DataFrame({
-        "COMID": rs_result["COMID"].values,
-        "mean": rs_result[args.var].values,
-    })
-    rs_df.to_csv(os.path.join(OUT_DIR, "extractrs_results.csv"), index=False)
-    merged.to_csv(os.path.join(OUT_DIR, "comparison.csv"), index=False)
+    merged_mean.to_csv(os.path.join(OUT_DIR, "comparison_mean.csv"), index=False)
+    merged_wmean.to_csv(os.path.join(OUT_DIR, "comparison_weighted_mean.csv"), index=False)
     print(f"\nResults saved to {OUT_DIR}/")
 
     rast_sub.close()
