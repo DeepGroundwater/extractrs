@@ -4,10 +4,10 @@ build-backend = "maturin"
 
 [project]
 name = "extractrs"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Fast exact zonal statistics for xarray — powered by Rust"
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 requires-python = ">=3.9"
 dependencies = [
     "numpy",

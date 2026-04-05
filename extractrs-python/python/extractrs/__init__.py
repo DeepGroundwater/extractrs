@@ -20,6 +20,13 @@ from extractrs._extractrs import (
 )
 from extractrs.accessor import ExtractrsDatasetAccessor, ExtractrsDataArrayAccessor
 
+try:
+    from extractrs._version import __version__
+except ImportError:
+    from importlib.metadata import version
+
+    __version__ = version("extractrs")
+
 __all__ = [
     "CoverageCache",
     "build_cache",
