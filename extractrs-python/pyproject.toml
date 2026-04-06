@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 rio = ["rioxarray"]
+docs = ["zensical", "mkdocstrings[python]"]
 
 [tool.maturin]
 python-source = "python"
