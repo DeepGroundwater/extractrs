@@ -27,11 +27,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
-      - run: uv sync --extra docs
-        working-directory: extractrs-python
-      - run: source .venv/bin/activate
-        working-directory: extractrs-python
-      - run: uv run --directory ../ zensical build --clean
+      - run: uv sync --project extractrs-python --extra docs
+      - run: uv run --project extractrs-python zensical build --clean
       - uses: actions/upload-pages-artifact@v4
         with:
           path: site
