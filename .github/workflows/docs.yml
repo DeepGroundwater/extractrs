@@ -23,11 +23,13 @@ jobs:
     steps:
       - uses: actions/configure-pages@v5
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
-      - run: pip install zensical
-      - run: zensical build --clean
+      - run: uv sync --extra docs
+        working-directory: extractrs-python
+      - run: uv run --directory extractrs-python zensical build --clean
       - uses: actions/upload-pages-artifact@v4
         with:
           path: site
