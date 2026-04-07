@@ -154,6 +154,16 @@ impl BBox {
     /// Uses quadrant-based projection with clamping for numerical robustness.
     ///
     /// Port of exactextract's `Box::crossing()` (box.cpp:43-118).
+    ///
+    /// **Degenerate fallback:** the original exactextract implementation
+    /// throws "Never get here" when a vertical/horizontal segment lies
+    /// entirely outside the box (i.e., the line never intersects this box).
+    /// This can be triggered by low-quality polygon data with collinear
+    /// vertices that happen to fall outside the current cell — see
+    /// isciences/exactextract#126. Rather than panic, we return the box
+    /// side closest to the segment so the traversal can make progress.
+    /// Callers should also avoid invoking `crossing()` in this state when
+    /// possible; see `Cell::take()` for the upstream guard.
     pub fn crossing(&self, c1: &Coord, c2: &Coord) -> Crossing {
         // Vertical line (x constant)
         if c1.x == c2.x {
@@ -162,7 +172,14 @@ impl BBox {
             } else if c2.y <= self.ymin {
                 return Crossing::new(Side::Bottom, c1.x, self.ymin);
             } else {
-                unreachable!("vertical line doesn't exit box");
+                // Degenerate: vertical line entirely outside the box on x.
+                // Return the closest side so the traversal can advance.
+                let y = clamp(c2.y, self.ymin, self.ymax);
+                if c1.x <= self.xmin {
+                    return Crossing::new(Side::Left, self.xmin, y);
+                } else {
+                    return Crossing::new(Side::Right, self.xmax, y);
+                }
             }
         }
 
@@ -173,7 +190,13 @@ impl BBox {
             } else if c2.x <= self.xmin {
                 return Crossing::new(Side::Left, self.xmin, c1.y);
             } else {
-                unreachable!("horizontal line doesn't exit box");
+                // Degenerate: horizontal line entirely outside the box on y.
+                let x = clamp(c2.x, self.xmin, self.xmax);
+                if c1.y <= self.ymin {
+                    return Crossing::new(Side::Bottom, x, self.ymin);
+                } else {
+                    return Crossing::new(Side::Top, x, self.ymax);
+                }
             }
         }
 
@@ -288,6 +311,40 @@ mod tests {
         let c = b.crossing(&Coord::new(0.5, 0.5), &Coord::new(2.0, 2.0));
         assert_eq!(c.side, Side::Top);
         assert!((c.coord.y - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_crossing_vertical_degenerate_left_of_box() {
+        // Vertical segment whose x is strictly left of the box.
+        // Pre-fix this would panic with "vertical line doesn't exit box".
+        let b = unit_box();
+        let c = b.crossing(&Coord::new(-2.0, 0.5), &Coord::new(-2.0, 0.5));
+        assert_eq!(c.side, Side::Left);
+        assert_eq!(c.coord.x, 0.0);
+    }
+
+    #[test]
+    fn test_crossing_vertical_degenerate_right_of_box() {
+        let b = unit_box();
+        let c = b.crossing(&Coord::new(5.0, 0.5), &Coord::new(5.0, 0.5));
+        assert_eq!(c.side, Side::Right);
+        assert_eq!(c.coord.x, 1.0);
+    }
+
+    #[test]
+    fn test_crossing_horizontal_degenerate_above_box() {
+        let b = unit_box();
+        let c = b.crossing(&Coord::new(0.5, 5.0), &Coord::new(0.5, 5.0));
+        assert_eq!(c.side, Side::Top);
+        assert_eq!(c.coord.y, 1.0);
+    }
+
+    #[test]
+    fn test_crossing_horizontal_degenerate_below_box() {
+        let b = unit_box();
+        let c = b.crossing(&Coord::new(0.5, -2.0), &Coord::new(0.5, -2.0));
+        assert_eq!(c.side, Side::Bottom);
+        assert_eq!(c.coord.y, 0.0);
     }
 
     #[test]
