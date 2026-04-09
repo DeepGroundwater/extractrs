@@ -92,7 +92,19 @@ impl Cell {
         // Coordinate exits cell.
         // Use prev_original for crossing computation to avoid robustness issues
         // from interpolated coordinates (exactextract cell.cpp:126-129).
-        let crossing = if let Some(prev) = prev_original {
+        //
+        // Skip prev_original if it would form a degenerate vertical/horizontal
+        // segment lying entirely outside the cell — last_coordinate is always
+        // on the boundary or interior so it's a safe fallback. See
+        // isciences/exactextract#126 for the data conditions that trigger this.
+        let prev_safe = prev_original.filter(|prev| {
+            let vertical_outside = prev.x == c.x
+                && (prev.x < self.bbox.xmin || prev.x > self.bbox.xmax);
+            let horizontal_outside = prev.y == c.y
+                && (prev.y < self.bbox.ymin || prev.y > self.bbox.ymax);
+            !vertical_outside && !horizontal_outside
+        });
+        let crossing = if let Some(prev) = prev_safe {
             self.bbox.crossing(prev, c)
         } else {
             let last = *self.traversals[idx].last_coordinate();
