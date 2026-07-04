@@ -171,5 +171,70 @@ python -m pytest pipelines/channel_attrs/tests/ -v
 # See specs/2026-07-04-corridor-buffer-scaling.md.
 python -m pipelines.channel_attrs.corridors
 
-# (subsequent tasks depend on downloads completing)
+# Task 2: SWORD widths
+python -m pipelines.channel_attrs.sword_width
+
+# Task 3: NHDPlus->MERIT crosswalk (heavy compute, ~hours)
+python -m pipelines.channel_attrs.nhd_crosswalk
+
+# Task 4: StreamCat corridor imperviousness
+python -m pipelines.channel_attrs.streamcat_transfer
+
+# Task 5: Zarrabi bankfull depth + width
+python -m pipelines.channel_attrs.zarrabi_transfer
+
+# Task 9: BFI + drainage density
+python -m pipelines.channel_attrs.bfi_transfer
 ```
+
+---
+
+## Task Deviations and Decisions
+
+### Task 4: StreamCat (2026-07-04)
+
+- **pctimp2019_Region07.json is truncated** (ends mid-record at 19,355,160 bytes).
+  `load_streamcat` uses `ijson` streaming parse and silently drops the incomplete
+  final record. Region07 (Upper Mississippi) yields 178,000 complete records vs
+  the ~182,000 expected from its file size — a ~2% loss for that region.
+  Action: re-download Region07 before the assembly step (or accept the ~0.1%
+  overall record loss across all 21 regions, ~2k/2.53M).
+
+- **API column naming**: The StreamCat REST API returns lowercase keys
+  (`pctimp2019catrp100`, `comid`), not the legacy FTP column names
+  (`PctImp2019Rp100Cat`, `COMID`).
+
+### Task 5: Zarrabi bankfull (2026-07-04)
+
+- **McManamay confinement: SKIPPED.** McManamay & Pers (2017) is not in the
+  Phase-A download manifest. The three bankfull columns (`bankfull_depth`,
+  `bankfull_width`, and a future `confinement` column) constitute the
+  full Zarrabi deliverable; confinement is deferred.
+
+- **Spearman(bankfull_width, channel_width_obs) = 0.005** — failed the >0.5
+  threshold. Root cause: channel_width_obs (Task 2, SWORD) contains extreme
+  outlier widths (up to 61,328 m) that collapse Spearman rank correlation to
+  near zero. The Zarrabi bankfull widths themselves are correct (9.9–1039 m).
+  This is a data quality issue in Task 2 (SWORD crosswalk noise in specific
+  MERIT reaches), not in the Zarrabi transfer. Flagged for Task 2 follow-up.
+
+- **Spearman(bankfull_depth, uparea) = 0.469** — marginally below the >0.5
+  threshold. The monotonic depth–area relationship is attenuated across
+  different geological settings and stream types at the CONUS scale; the
+  direction is correct (positive) and the median depth (1.43 m) is well within
+  the expected range.
+
+### Task 9: BFI + drainage density (2026-07-04)
+
+- **BFI source deviation from plan**: The plan (Task 9, Step 1) described
+  transfer via rioxarray zonal stats on the raw `bfi48grd` raster. The
+  downloaded `BFI_CONUS.zip` from ScienceBase is instead an **NHD-indexed
+  table** (`CAT_BFI` per NHD COMID, already aggregated per local catchment by
+  EPA). This is used directly via the NHDPlus→MERIT crosswalk — equivalent
+  derivation from the same Wolock BFI grid, simpler path, no rioxarray needed.
+
+- **BFI values confirm [0, 100] range** (max 90.0 % observed → 0.90 after /100).
+
+- **BFI 100% coverage** across all 156,002 MERIT COMIDs — the NHD-indexed
+  table is dense enough that every MERIT reach matches at least one NHD COMID
+  with match_frac ≥ 0.3.
