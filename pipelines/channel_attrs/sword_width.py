@@ -1,95 +1,112 @@
-"""SWORD/GRWL observed widths -> MERIT COMIDs via the published MERIT-SWORD
-translation tables (Wade et al. 2025, Zenodo 13152826).
+"""SWORD/GRWL observed widths -> MERIT COMIDs via spatial join into MERIT
+catchment polygons (bugfix1 version).
 
-Adaptation notes (verified 2026-07-04):
-- Translation table MERIT reach ID variable: `mb` (NOT `COMID` as the plan
-  draft assumed). Dimension and coordinate variable both named `mb`.
-  CONUS values like 71000001 (pfaf-2 prefix + 6-digit reach index).
-- CONUS = pfaf-2 regions 71–78 (8 files: mb_to_sword_pfaf_7[1-8]_translate.nc).
-- SWORD v16 NA file (`na_sword_v16.nc`) has a `/reaches` group with
-  `reach_id` (int64) and `width` (float64, 38 048 NA reaches).
-  xarray decode fails on that file's string variables; read with netCDF4.
-- SWORD `width` range: -1.0 to 69 823 m; negative sentinel = missing data,
-  filtered out before transfer.
+Background (2026-07-04): The Wade et al. 2025 (Zenodo 13152826) mb_to_sword
+translation tables use a pre-bugfix MERIT-Basins COMID ordering that does NOT
+match the COMIDs in the bugfix1 shapefile used by this project.  The same
+integer COMID refers to completely different reaches in the two versions
+(distances of 100–1100 km are common within a single pfaf-2 region), producing
+zero rank correlation against bankfull widths when the table is used directly.
+
+Fix: assign each SWORD NA reach to a MERIT bugfix1 COMID by spatial join of
+the SWORD reach centerpoint (x, y) into the MERIT bugfix1 catchment polygons.
+Only river reaches (lakeflag == 0) are used; lake/reservoir SWORD widths are
+not representative of channel width.
+
+Outputs derived/channel_width_obs.parquet (columns: COMID, channel_width_obs).
 """
 import netCDF4
 import numpy as np
 import pandas as pd
-import xarray as xr
+import geopandas as gpd
 
 from . import paths
 from .transfer import weighted_transfer
 
-# Extracted translation directory
-_TRANS_DIR = paths.RAW / "merit_sword" / "ms_translate" / "mb_to_sword"
 _SWORD_NA = paths.RAW / "sword" / "netcdf" / "na_sword_v16.nc"
 
-# CONUS pfaf-2 regions (confirmed from zip listing)
-CONUS_REGIONS = [71, 72, 73, 74, 75, 76, 77, 78]
+# CONUS pfaf-2 regions
+CONUS_PFAF = {71, 72, 73, 74, 75, 76, 77, 78}
 
 
-def melt_translation(ds: xr.Dataset, comid_var: str = "mb") -> pd.DataFrame:
-    """Melt a wide translation table into long (COMID, foreign_id, part_len) form.
+def load_sword_reaches() -> pd.DataFrame:
+    """Load SWORD v16 NA reaches; return DataFrame with geometry columns.
 
-    Translation files have sword_1..sword_40 (SWORD reach_id) and
-    part_len_1..part_len_40 (overlap length in m) on a MERIT-reach dimension.
-    Zero values are absent/no-match and are dropped.
-    """
-    frames = []
-    for k in range(1, 41):
-        s, p = f"sword_{k}", f"part_len_{k}"
-        if s not in ds or p not in ds:
-            break
-        df = pd.DataFrame({
-            "COMID": ds[comid_var].values,
-            "foreign_id": ds[s].values,
-            "part_len": ds[p].values,
-        })
-        frames.append(df[(df.foreign_id > 0) & (df.part_len > 0)])
-    if not frames:
-        return pd.DataFrame(columns=["COMID", "foreign_id", "part_len"])
-    return pd.concat(frames, ignore_index=True)
-
-
-def load_sword_widths() -> pd.DataFrame:
-    """Load SWORD v16 NA reach widths; return DataFrame(foreign_id, width).
-
-    Uses netCDF4 directly — xarray raises AttributeError on the string
-    variable `river_name` in this file.
-    Negative widths are SWORD's missing-data sentinel and are set to NaN.
+    Only CONUS reaches (pfaf-2 regions 71-78) with positive width and
+    lakeflag == 0 (river reaches, not lakes / reservoirs) are returned.
+    Negative width is SWORD's missing-data sentinel and is excluded.
     """
     ds = netCDF4.Dataset(_SWORD_NA)
     rg = ds.groups["reaches"]
     reach_ids = rg["reach_id"][:].data
+    xs = rg["x"][:].data
+    ys = rg["y"][:].data
     widths = rg["width"][:].data.astype(float)
+    reach_lengths = rg["reach_length"][:].data.astype(float)
+    lakeflags = rg["lakeflag"][:].data
     ds.close()
-    widths[widths < 0] = np.nan
-    return pd.DataFrame({"foreign_id": reach_ids, "width": widths})
+
+    df = pd.DataFrame({
+        "foreign_id": reach_ids,
+        "x": xs,
+        "y": ys,
+        "width": widths,
+        "reach_length": reach_lengths,
+        "lakeflag": lakeflags,
+    })
+
+    pfaf = df["foreign_id"] // 1_000_000_000
+    df = df[pfaf.isin(CONUS_PFAF) & (df["width"] > 0) & (df["lakeflag"] == 0)]
+    return df.reset_index(drop=True)
+
+
+def build_crosswalk(sword_df: pd.DataFrame) -> pd.DataFrame:
+    """Spatial join SWORD reach centerpoints into MERIT bugfix1 catchments.
+
+    Returns long DataFrame(COMID, foreign_id, part_len) where part_len is the
+    SWORD reach_length (used as the weight in the subsequent transfer).
+    """
+    sword_gdf = gpd.GeoDataFrame(
+        sword_df[["foreign_id", "reach_length"]],
+        geometry=gpd.points_from_xy(sword_df["x"], sword_df["y"]),
+        crs="EPSG:4326",
+    )
+
+    cat = gpd.read_file(paths.MERIT_CAT, columns=["COMID"])
+    cat = cat.set_crs("EPSG:4326", allow_override=True)
+
+    joined = gpd.sjoin(sword_gdf, cat[["COMID", "geometry"]], how="left", predicate="within")
+
+    matched = joined[joined["COMID"].notna()][["foreign_id", "reach_length", "COMID"]].copy()
+    unmatched = joined[joined["COMID"].isna()].copy()
+
+    # Recover boundary reaches with nearest-catchment join (projected CRS).
+    if len(unmatched) > 0:
+        sword_proj = unmatched[["foreign_id", "reach_length", "geometry"]].to_crs(paths.CRS_EQUAL_AREA)
+        cat_proj = cat[["COMID", "geometry"]].to_crs(paths.CRS_EQUAL_AREA)
+        nearest = gpd.sjoin_nearest(sword_proj, cat_proj, how="left", max_distance=10_000)
+        nearest = nearest[nearest["COMID"].notna()][["foreign_id", "reach_length", "COMID"]].copy()
+        matched = pd.concat([matched, nearest], ignore_index=True)
+
+    xwalk = matched[["COMID", "foreign_id", "reach_length"]].copy()
+    xwalk["COMID"] = xwalk["COMID"].astype(int)
+    xwalk = xwalk.rename(columns={"reach_length": "part_len"})
+    return xwalk.reset_index(drop=True)
 
 
 def main() -> None:
-    print("Loading SWORD v16 NA widths ...")
-    sword = load_sword_widths()
-    print(f"  SWORD NA reaches: {len(sword):,}  (non-null widths: {sword['width'].notna().sum():,})")
+    print("Loading SWORD v16 NA river reaches (CONUS, lakeflag==0, width>0) ...")
+    sword = load_sword_reaches()
+    print(f"  SWORD CONUS river reaches: {len(sword):,}")
 
-    print("Melting MERIT-SWORD translation tables for CONUS regions 71-78 ...")
-    xwalk_frames = []
-    for region in CONUS_REGIONS:
-        nc_path = _TRANS_DIR / f"mb_to_sword_pfaf_{region}_translate.nc"
-        ds = xr.open_dataset(nc_path)
-        frame = melt_translation(ds, comid_var="mb")
-        ds.close()
-        print(f"  pfaf-{region}: {len(frame):,} (COMID, SWORD) pairs")
-        xwalk_frames.append(frame)
-
-    xwalk = pd.concat(xwalk_frames, ignore_index=True)
-    print(f"Total crosswalk pairs: {len(xwalk):,}")
+    print("Building MERIT-SWORD crosswalk via spatial join into bugfix1 catchments ...")
+    xwalk = build_crosswalk(sword)
+    print(f"  Crosswalk pairs: {len(xwalk):,}  unique COMIDs: {xwalk['COMID'].nunique():,}")
 
     print("Running weighted transfer ...")
-    out = weighted_transfer(xwalk, sword, value_col="width")
+    out = weighted_transfer(xwalk, sword[["foreign_id", "width"]], value_col="width")
     out = out.rename(columns={"width": "channel_width_obs"})
 
-    # Coverage stats
     covered = out["channel_width_obs"].notna()
     total = len(out)
     n_covered = covered.sum()

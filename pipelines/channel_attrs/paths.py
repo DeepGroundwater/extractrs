@@ -11,6 +11,9 @@ DERIVED = Path("/mnt/ssd1/data/channel_attrs/derived")
 MERIT_RIV = Path(
     "/home/tbindas/projects/ddr/data/merit/riv_pfaf_7_MERIT_Hydro_v07_Basins_v01_bugfix1.shp"
 )
+MERIT_CAT = Path(
+    "/home/tbindas/projects/ddr/data/merit/cat_pfaf_7_MERIT_Hydro_v07_Basins_v01_bugfix1.shp"
+)
 GLOBAL_NC = Path("/home/tbindas/projects/ddr/data/merit_global_attributes_v2.nc")
 STATS_DIR = Path("/home/tbindas/projects/ddr/data/statistics")
 
