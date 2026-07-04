@@ -122,14 +122,13 @@ Downloading all 21 CONUS HUC2 regions as JSON via nohup script.
 Regions: Region01, Region02, Region03N, Region03S, Region03W, Region04–Region18.
 
 **Zell & Sanford 2020 WTD:**
-ScienceBase item 631405c5d34e36012efa3190 contains MODFLOW-6 output archives.
-`Output_CONUS_trans_dtw.zip` (918 MB) is the depth-to-water product; the
-`trans_dtw` name suggests it may contain both transmissivity and DTW rasters.
-Inspect archive contents after download to identify the usable raster layer(s).
-Decision recorded: **Zell & Sanford 2020 is primary WTD source**; Fan 2013
-(`NAMERICA_WTD_annualmean.nc`) is the secondary/cross-check source (as in the
-plan's spec §3 sensitivity analysis). If the Zell & Sanford archive lacks a
-directly usable single-band DTW raster, note here and promote Fan 2013 to primary.
+ScienceBase item 631405c5d34e36012efa3190.
+`Output_CONUS_trans_dtw.zip` downloaded (876 MB on disk; ScienceBase listed 918 MB but
+the zip validates as complete). Contains exactly 2 files:
+- `Output_CONUS_trans_dtw/conus_MF6_SS_Unconfined_250_dtw.tif` — **DTW GeoTIFF, 250m, directly usable**
+- `Output_CONUS_trans_dtw/conus_MF6_SS_Unconfined_250_trans.tif` — transmissivity (not needed for Phase A)
+Decision: **Zell & Sanford 2020 is confirmed primary WTD source** (directly usable DTW GeoTIFF at 250m).
+Fan 2013 (`NAMERICA_WTD_annualmean.nc`) remains the secondary cross-check source.
 
 **BFI:**
 Primary URL `http://water.usgs.gov/GIS/dsdl/bfi48grd.zip` is dead
