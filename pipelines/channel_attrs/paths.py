@@ -33,3 +33,9 @@ ORDER_WIDTH_RATIO = 1.9    # bankfull-width growth per Strahler order (L&M 1953 
 
 CROSSWALK_BUFFER_M = 300.0      # NHD->MERIT matching envelope (MERIT lateral error 100-300 m)
 CROSSWALK_TOP_K = 40            # mirror Wade et al. 2025 table shape
+
+# Width cap for corridor scaling: widths above this are SWORD estuary/lake
+# artefacts, not channel widths.  SWORD measured max ~61 km on pre-bugfix1
+# fabrics; observed max on bugfix1 is 16.7 km.  Cap at 3 km: a >3 km
+# "channel" is not a corridor-extraction target.
+WIDTH_CAP_M = 3000.0

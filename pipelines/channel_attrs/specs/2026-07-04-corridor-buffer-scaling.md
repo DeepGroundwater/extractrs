@@ -116,6 +116,20 @@ Consequences for the existing sets:
 - Where the corridor is width-scaled AND the reach is braided, the GRWL
   width already includes the braid belt (it measures the water surface at
   mean discharge), so no extra braiding factor is applied.
+- A 3 km width cap (`paths.WIDTH_CAP_M = 3000 m`) is applied in
+  `_resolve_width_m` before the hinge formula.  SWORD carries residual
+  estuary and large lake polygon widths that are not channel widths: the
+  measured maximum on CONUS bugfix1 fabric is 16.7 km; the pre-bugfix1
+  MERIT-Basins COMID mismatch was even worse (measured max ~61 km before
+  the e540e8b fix in `sword_width.py`).  Without the cap those reaches
+  produce half-widths up to ~25 km, blanketing entire flood plains.  The
+  cap clamps the half-width to ≤ 4.5 km (1.5 × 3 km); corridors at the
+  cap are still dominated by the SWORD/estuary artefact and should be
+  treated as lower-quality for fine-raster extraction tasks.  Note also
+  that the published Wade crosswalk used for `channel_width_obs` was built
+  against pre-bugfix1 MERIT-Basins fabrics and is therefore invalid for
+  bugfix1-topology fabrics; see `sword_width.py` commit e540e8b for the
+  COMID-remapping fix applied before width transfer.
 
 ## References
 

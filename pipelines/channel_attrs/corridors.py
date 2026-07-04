@@ -13,13 +13,14 @@ Two corridor products (spec: specs/2026-07-04-corridor-buffer-scaling.md):
 
 Width-estimate priority (spec §"Implementation rule"): observed channel width
 (SWORD/GRWL) > modeled bankfull (Zarrabi et al. 2025) > order fallback
-``w(omega) = 2 * 1.9^(omega-1)`` m. Only the order fallback is available in this
-branch; the crosswalked width columns arrive with the Task-3 crosswalk and slot
-into the chain automatically once present.
+``w(omega) = 2 * 1.9^(omega-1)`` m. A 3 km cap is applied after priority
+resolution to guard residual estuary/lake SWORD widths (paths.WIDTH_CAP_M).
 """
+import argparse
 import time
 
 import numpy as np
+import pandas as pd
 import geopandas as gpd
 
 from . import paths
@@ -47,6 +48,9 @@ def _resolve_width_m(riv):
     Prefers observed then modeled width columns where present and finite; falls
     back to the order-derived width otherwise (currently every reach, until the
     Task-3 crosswalk supplies ``channel_width_obs`` / ``bankfull_width``).
+
+    A cap of ``paths.WIDTH_CAP_M`` (3 km) is applied after priority resolution
+    to guard against SWORD residual estuary/lake widths.
     """
     width = order_bankfull_width_m(riv["order"].to_numpy(dtype=float))
     # Lowest to highest priority, so later (better) sources overwrite earlier.
@@ -55,6 +59,10 @@ def _resolve_width_m(riv):
             observed = riv[col].to_numpy(dtype=float)
             valid = np.isfinite(observed) & (observed > 0)
             width = np.where(valid, observed, width)
+    # Cap: residual estuary/lake polygons in SWORD produce widths up to ~17 km
+    # on CONUS bugfix1; a >3 km value is not a channel and must not drive corridor
+    # sizing (would produce ~4.5 km half-width, blanketing entire flood plains).
+    width = np.minimum(width, paths.WIDTH_CAP_M)
     return width
 
 
@@ -87,11 +95,37 @@ def build_scaled_corridors(riv: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame(out, geometry="geometry", crs=paths.CRS_EQUAL_AREA)
 
 
-def main() -> None:
+def main(argv=None) -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--only",
+        choices=["scaled", "100m"],
+        default=None,
+        help="Build only one corridor set; omit to build both.",
+    )
+    args = parser.parse_args(argv)
+
     print(f"Reading MERIT flowlines from {paths.MERIT_RIV} ...")
     t0 = time.time()
     riv = gpd.read_file(paths.MERIT_RIV, columns=["COMID", "order"])
     print(f"  Read {len(riv):,} features in {time.time() - t0:.1f}s  (CRS: {riv.crs})")
+
+    # Merge real-width columns for the scaled-corridor priority chain.
+    n_before = len(riv)
+    cw = pd.read_parquet(paths.DERIVED / "channel_width_obs.parquet",
+                         columns=["COMID", "channel_width_obs"])
+    riv = riv.merge(cw, on="COMID", how="left")
+
+    bf = pd.read_parquet(paths.DERIVED / "bankfull.parquet",
+                         columns=["COMID", "bankfull_width"])
+    riv = riv.merge(bf, on="COMID", how="left")
+    assert len(riv) == n_before, (
+        f"Merge changed row count: {n_before} → {len(riv)}"
+    )
+    n_obs = riv["channel_width_obs"].notna().sum()
+    n_bf = riv["bankfull_width"].notna().sum()
+    print(f"  Width coverage: channel_width_obs={n_obs:,}  bankfull_width={n_bf:,} "
+          f"  order-fallback={n_before - max(n_obs, n_bf):,}")
 
     riv = riv.to_crs(paths.CRS_EQUAL_AREA)  # reproject once; build_* are no-ops below
 
@@ -100,6 +134,9 @@ def main() -> None:
         ("corridors_scaled", build_scaled_corridors),
     ]
     for name, fn in builders:
+        if args.only is not None and args.only != name.replace("corridors_", ""):
+            print(f"Skipping {name} (--only {args.only})")
+            continue
         t1 = time.time()
         print(f"Building {name} ...")
         corr = fn(riv)
@@ -109,6 +146,11 @@ def main() -> None:
         size_mb = out_path.stat().st_size / 1e6
         print(f"  {name}: {len(corr):,} corridors, CRS={corr.crs.to_epsg()}, "
               f"{size_mb:.1f} MB  ({elapsed:.1f}s)")
+        if name == "corridors_scaled":
+            hw = corr["half_width_m"]
+            print(f"  half_width_m: p50={hw.median():.1f}  p99={hw.quantile(0.99):.1f} "
+                  f" max={hw.max():.1f}  count>{paths.E_POS_M:.0f}m="
+                  f"{(hw > paths.E_POS_M).sum():,}")
 
 
 if __name__ == "__main__":

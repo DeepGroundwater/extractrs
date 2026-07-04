@@ -94,3 +94,35 @@ def test_scaled_corridor_ignores_invalid_observed_width():
     out = build_scaled_corridors(gdf)
     expected = scaled_half_width_m(order_bankfull_width_m(9))
     assert np.allclose(out["half_width_m"].to_numpy(), expected)
+
+
+def test_width_cap_applied():
+    # An estuary-scale width (> WIDTH_CAP_M) must be clipped to the cap.
+    gdf = gpd.GeoDataFrame(
+        {"COMID": [1], "order": [1], "channel_width_obs": [paths.WIDTH_CAP_M * 2]},
+        geometry=[LineString([(0, 0), (1000, 0)])],
+        crs="EPSG:5070",
+    )
+    out = build_scaled_corridors(gdf)
+    expected_hw = scaled_half_width_m(paths.WIDTH_CAP_M)  # cap applied before hinge
+    assert np.isclose(out["half_width_m"].iloc[0], expected_hw), (
+        f"Expected {expected_hw}, got {out['half_width_m'].iloc[0]}"
+    )
+
+
+def test_merge_preserves_row_count():
+    # Merging width columns onto a mini-riv frame must not change the row count
+    # (left-join semantics: all MERIT reaches kept, NaN where no width data).
+    import pandas as pd
+
+    gdf = gpd.GeoDataFrame(
+        {"COMID": [1, 2, 3], "order": [3, 5, 8]},
+        geometry=[LineString([(0, 0), (1000, 0)])] * 3,
+        crs="EPSG:5070",
+    )
+    cw = pd.DataFrame({"COMID": [2], "channel_width_obs": [300.0]})
+    bf = pd.DataFrame({"COMID": [3], "bankfull_width": [150.0]})
+    merged = gdf.merge(cw, on="COMID", how="left").merge(bf, on="COMID", how="left")
+    assert len(merged) == 3, f"Row count changed: {len(merged)}"
+    assert np.isnan(merged.loc[merged.COMID == 1, "channel_width_obs"].iloc[0])
+    assert merged.loc[merged.COMID == 2, "channel_width_obs"].iloc[0] == 300.0
