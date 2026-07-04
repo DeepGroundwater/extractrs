@@ -165,6 +165,10 @@ source .venv-pipelines/bin/activate
 python -m pytest pipelines/channel_attrs/tests/ -v
 
 # Task 1: Corridor geometries (once MERIT shapefile accessible)
+# Writes corridors_100m.parquet (fixed 100 m floor, sensitivity column) and
+# corridors_scaled.parquet (half_width = max(100 m, 1.5 * bankfull width);
+# order fallback until the Task-3 width crosswalk lands).
+# See specs/2026-07-04-corridor-buffer-scaling.md.
 python -m pipelines.channel_attrs.corridors
 
 # (subsequent tasks depend on downloads completing)

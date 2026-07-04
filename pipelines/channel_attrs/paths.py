@@ -20,7 +20,13 @@ OUT_STATS = Path("/home/tbindas/projects/ddr/data/statistics/merit_channel_attri
 # Equal-area CRS for all buffering/length math (CONUS Albers).
 CRS_EQUAL_AREA = "EPSG:5070"
 
-CORRIDOR_HALF_WIDTH_M = 100.0   # StreamCat precedent (Hill et al. 2016)
-CORRIDOR_WIDE_M = 200.0         # flat-valley widening (Amatulli 2022 error tail)
+# Corridor buffer scaling (spec: specs/2026-07-04-corridor-buffer-scaling.md).
+# half_width = max(E_POS_M, ALPHA_HALF * bankfull_width). Below ~order 6 the
+# positional-error floor dominates and the scaled set equals the fixed 100 m set.
+E_POS_M = 100.0             # positional-error floor (Amatulli 2022; Hill et al. 2016)
+ALPHA_HALF = 1.5           # half-width per unit bankfull width (banks + hyporheic margin)
+ORDER_WIDTH_BASE_M = 2.0   # order-1 bankfull width, m (Downing et al. 2012)
+ORDER_WIDTH_RATIO = 1.9    # bankfull-width growth per Strahler order (L&M 1953 + Horton)
+
 CROSSWALK_BUFFER_M = 300.0      # NHD->MERIT matching envelope (MERIT lateral error 100-300 m)
 CROSSWALK_TOP_K = 40            # mirror Wade et al. 2025 table shape
