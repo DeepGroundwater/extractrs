@@ -23,7 +23,7 @@ association).  Lines are densified to ``spacing_m`` vertices and the nearest
 cell value is taken per vertex.
 
 Output: ``derived/wtd_channel.parquet``
-  Columns: COMID, wtd_channel_zs, wtd_channel_fan, wtd_corridor100_zs,
+  Columns: COMID, wtd_channel_zs, wtd_channel_fan, wtd_corridor10_zs,
            wtd_channel_n
   All values are positive below-surface metres after sign conversion.
 """
@@ -214,7 +214,7 @@ def _corridor_mean_zs(zs_da: xr.DataArray, riv: gpd.GeoDataFrame) -> pd.DataFram
     """
     import extractrs  # noqa: F401
 
-    corr = gpd.read_parquet(paths.DERIVED / "corridors_100m.parquet")
+    corr = gpd.read_parquet(paths.DERIVED / "corridors_10m.parquet")
     corr = corr.to_crs(zs_da.rio.crs)
     riv_native = riv.to_crs(zs_da.rio.crs)
 
@@ -238,13 +238,12 @@ def _corridor_mean_zs(zs_da: xr.DataArray, riv: gpd.GeoDataFrame) -> pd.DataFram
             result = ds.extrs.zonal_stats(tile_corr, stat="mean", id_col="COMID")
             df = result["wtd"].to_dataframe().reset_index()[["COMID", "wtd"]]
             frames.append(df)
-        except Exception:
-            # No corridor polygons overlap this tile window → skip silently.
-            pass
+        except Exception as exc:
+            print(f"  WARNING: zonal_stats failed on tile {tile_id}: {exc!r}")
 
     if not frames:
-        return pd.DataFrame({"COMID": riv["COMID"].astype(int), "wtd": np.nan})
-    return pd.concat(frames, ignore_index=True).rename(columns={"wtd": "wtd_corridor100_zs"})
+        return pd.DataFrame({"COMID": riv["COMID"].astype(int), "wtd_corridor10_zs": np.nan})
+    return pd.concat(frames, ignore_index=True).rename(columns={"wtd": "wtd_corridor10_zs"})
 
 
 # ── main ───────────────────────────────────────────────────────────────────────
@@ -342,8 +341,8 @@ def main() -> None:
     print("Computing corridor-mean (extractrs) over ZS raster ...")
     corr_df = _corridor_mean_zs(zs_da, riv)
     # Apply same ZS sign/clip: positive-down, clip artesian to 0
-    if "wtd_corridor100_zs" in corr_df.columns:
-        corr_df["wtd_corridor100_zs"] = corr_df["wtd_corridor100_zs"].clip(lower=0.0)
+    if "wtd_corridor10_zs" in corr_df.columns:
+        corr_df["wtd_corridor10_zs"] = corr_df["wtd_corridor10_zs"].clip(lower=0.0)
 
     # ── Merge ─────────────────────────────────────────────────────────────────
     out = (
@@ -353,7 +352,7 @@ def main() -> None:
             on="COMID", how="left"
         )
         .merge(fan_df[["COMID", "wtd_channel_fan"]], on="COMID", how="left")
-        .merge(corr_df[["COMID", "wtd_corridor100_zs"]], on="COMID", how="left")
+        .merge(corr_df[["COMID", "wtd_corridor10_zs"]], on="COMID", how="left")
     )
 
     # Persist frac_below alongside ZS for Task 7 (written to the same parquet
@@ -373,8 +372,8 @@ def main() -> None:
     if rho_zs_fan <= 0.4:
         print("  WARNING: spearman(ZS, Fan) below 0.4 — buffer strategy may matter")
 
-    both2 = out.dropna(subset=["wtd_channel_zs", "wtd_corridor100_zs"])
-    rho_near_corr, _ = spearmanr(both2["wtd_channel_zs"], both2["wtd_corridor100_zs"])
+    both2 = out.dropna(subset=["wtd_channel_zs", "wtd_corridor10_zs"])
+    rho_near_corr, _ = spearmanr(both2["wtd_channel_zs"], both2["wtd_corridor10_zs"])
     print(
         f"Cross-check  spearman(nearest-cell ZS, corridor-mean ZS) = {rho_near_corr:.3f}"
         "  (expect > 0.8)"
@@ -391,13 +390,13 @@ def main() -> None:
 
     n_zs = out["wtd_channel_zs"].notna().sum()
     n_fan = out["wtd_channel_fan"].notna().sum()
-    n_corr = out["wtd_corridor100_zs"].notna().sum()
+    n_corr = out["wtd_corridor10_zs"].notna().sum()
     elapsed = time.time() - t0
     print(
         f"\nWrote {out_path}  ({len(out):,} rows, {out_path.stat().st_size/1e6:.1f} MB)"
         f"\n  wtd_channel_zs:      {n_zs:,} / {n_reaches:,} reaches"
         f"\n  wtd_channel_fan:     {n_fan:,} / {n_reaches:,} reaches"
-        f"\n  wtd_corridor100_zs:  {n_corr:,} / {n_reaches:,} reaches"
+        f"\n  wtd_corridor10_zs:  {n_corr:,} / {n_reaches:,} reaches"
         f"\n  spearman(ZS, Fan)={rho_zs_fan:.3f}  spearman(nearest, corridor)={rho_near_corr:.3f}"
         f"\n  Elapsed: {elapsed:.0f}s"
     )

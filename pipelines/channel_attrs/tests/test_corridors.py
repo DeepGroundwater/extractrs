@@ -37,23 +37,35 @@ def test_build_corridors_reprojects_from_4326():
     assert out.geometry.iloc[0].area > 100_000  # degrees-buffer would be ~1e-4
 
 
-def test_order_fallback_width_matches_spec_table():
-    # w(omega) = 2 * 1.9^(omega-1): order 1 -> 2 m, order 6 -> ~50 m (spec §hinge).
-    assert abs(order_bankfull_width_m(1) - 2.0) < 1e-9
-    assert abs(order_bankfull_width_m(6) - 2.0 * 1.9**5) < 1e-9
-    assert 45 < order_bankfull_width_m(6) < 55
+def test_order_fallback_width_matches_wrf_hydro_table():
+    # Values from paths.WRF_HYDRO_BW_M (NCAR wrf_hydro_functions.py Mannings_Bw).
+    from pipelines.channel_attrs import paths
+    for order, expected in paths.WRF_HYDRO_BW_M.items():
+        assert abs(order_bankfull_width_m(order) - expected) < 1e-9, (
+            f"order {order}: got {order_bankfull_width_m(order)}, expected {expected}"
+        )
+
+def test_order_fallback_clamps_to_table_bounds():
+    from pipelines.channel_attrs import paths
+    # order < 1 → clamped to order 1
+    assert order_bankfull_width_m(0) == paths.WRF_HYDRO_BW_M[1]
+    # order > 10 → clamped to order 10
+    assert order_bankfull_width_m(12) == paths.WRF_HYDRO_BW_M[10]
 
 
 def test_scaled_half_width_hinge():
-    # Small width -> pinned to the 100 m positional-error floor; large width scales.
-    assert scaled_half_width_m(2.0) == 100.0        # 1.5*2 = 3 << 100
-    assert scaled_half_width_m(400.0) == 600.0      # 1.5*400 = 600 > 100
+    # Small width -> pinned to the 10 m floor; large width scales.
+    assert scaled_half_width_m(2.0) == paths.E_POS_M    # 1.5*2 = 3 < 10
+    assert scaled_half_width_m(400.0) == 600.0           # 1.5*400 = 600 > 10
 
 
-def test_scaled_corridor_floors_small_streams():
-    # Order 3 (w ~7 m) is far below the hinge: half_width stays at the floor.
+import pytest
+
+@pytest.mark.parametrize("order", [1, 2, 3, 4])
+def test_scaled_corridor_floors_small_streams(order):
+    # Orders 1-4: 1.5 * Bw < E_POS_M (e.g. order 4: 1.5*5.3=7.95 < 10 m).
     gdf = gpd.GeoDataFrame(
-        {"COMID": [1], "order": [3]},
+        {"COMID": [1], "order": [order]},
         geometry=[LineString([(0, 0), (1000, 0)])],
         crs="EPSG:5070",
     )
@@ -62,15 +74,17 @@ def test_scaled_corridor_floors_small_streams():
     assert out.crs.to_epsg() == 5070
 
 
-def test_scaled_corridor_widens_large_rivers():
-    # Order 9 clears the hinge: w = 2*1.9^8 ~ 340 m, half_width = 1.5*w ~ 510 m.
+@pytest.mark.parametrize("order", [5, 6, 7, 8, 9, 10])
+def test_scaled_corridor_widens_large_rivers(order):
+    # Orders 5-10: 1.5 * Bw > E_POS_M — half_width equals 1.5 * WRF-Hydro Bw.
+    bw = paths.WRF_HYDRO_BW_M[order]
     gdf = gpd.GeoDataFrame(
-        {"COMID": [1], "order": [9]},
+        {"COMID": [1], "order": [order]},
         geometry=[LineString([(0, 0), (1000, 0)])],
         crs="EPSG:5070",
     )
     out = build_scaled_corridors(gdf)
-    assert out["half_width_m"].iloc[0] > 400.0
+    assert np.isclose(out["half_width_m"].iloc[0], paths.ALPHA_HALF * bw)
 
 
 def test_scaled_corridor_prefers_observed_width():

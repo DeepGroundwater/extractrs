@@ -161,17 +161,20 @@ Downloaded (66 MB). Server is slow (WebFetch times out; wget -c works directly).
 # Activate environment
 source .venv-pipelines/bin/activate
 
-# Run tests
+# Run tests (69 tests, ~1 s)
 python -m pytest pipelines/channel_attrs/tests/ -v
 
-# Task 1: Corridor geometries (once MERIT shapefile accessible)
-# Writes corridors_100m.parquet (fixed 100 m floor, sensitivity column) and
-# corridors_scaled.parquet (half_width = max(100 m, 1.5 * bankfull width);
-# order fallback until the Task-3 width crosswalk lands).
+# Task 1: Corridor geometries
+# Writes corridors_10m.parquet (fixed 10 m half-width floor, sensitivity column)
+# and corridors_scaled.parquet (half_width = max(10 m, 1.5 × bankfull width);
+# orders 1–4 floor at 10 m, orders 5–10 scale with WRF-Hydro Bw table).
+# Order fallback: paths.WRF_HYDRO_BW_M (NCAR Mannings_Bw, Strahler 1–10).
+# Width priority: channel_width_obs > bankfull_width > order fallback.
 # See specs/2026-07-04-corridor-buffer-scaling.md.
 python -m pipelines.channel_attrs.corridors
+# Build one product only: --only 10m | --only scaled
 
-# Task 2: SWORD widths
+# Task 2: SWORD widths (requires raw/sword/netcdf/na_sword_v16.nc)
 python -m pipelines.channel_attrs.sword_width
 
 # Task 3: NHDPlus->MERIT crosswalk (heavy compute, ~hours)
@@ -183,9 +186,40 @@ python -m pipelines.channel_attrs.streamcat_transfer
 # Task 5: Zarrabi bankfull depth + width
 python -m pipelines.channel_attrs.zarrabi_transfer
 
+# Task 6: WTD zonal stats + Fan cross-check (reads corridors_10m + ZS raster)
+python -m pipelines.channel_attrs.wtd_sample
+
+# Task 7: WTD bed-relative depth
+python -m pipelines.channel_attrs.wtd_bedrel
+
+# Task 8: Alluvium fraction (overlay on corridors_scaled)
+python -m pipelines.channel_attrs.alluvium
+
 # Task 9: BFI + drainage density
 python -m pipelines.channel_attrs.bfi_transfer
+
+# Task 10: Assemble final NC + stats JSON
+python -m pipelines.channel_attrs.assemble
 ```
+
+### Test coverage
+
+| Test file | Module(s) tested | Tests |
+|---|---|---|
+| `test_alluvium.py` | `alluvium.overlay_chunk` | 5 |
+| `test_assemble.py` | `assemble` | 1 |
+| `test_bfi_transfer.py` | `bfi_transfer` | 4 |
+| `test_core.py` | `wtd_sample.sample_along_lines`, `transfer.weighted_transfer` | 13 |
+| `test_corridors.py` | `corridors` (all public functions) | 19 |
+| `test_nhd_crosswalk.py` | `nhd_crosswalk` | 3 |
+| `test_paths.py` | `paths` (file existence) | 2 |
+| `test_streamcat_transfer.py` | `streamcat_transfer.load_streamcat` | 3 |
+| `test_sword_width.py` | `sword_width.load_sword_reaches`, `build_crosswalk` | 5 |
+| `test_transfer.py` | `transfer.weighted_transfer` | 2 |
+| `test_wtd_bedrel.py` | `wtd_bedrel` | 4 |
+| `test_wtd_sample.py` | `wtd_sample.sample_along_lines` | 5 |
+| `test_zarrabi_transfer.py` | `zarrabi_transfer.load_zarrabi` | 3 |
+| **Total** | | **69** |
 
 ---
 

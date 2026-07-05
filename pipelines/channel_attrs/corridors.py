@@ -2,14 +2,11 @@
 
 Two corridor products (spec: specs/2026-07-04-corridor-buffer-scaling.md):
 
-- ``corridors_100m`` — fixed 100 m half-width: the positional-error floor
-  (Amatulli et al. 2022; StreamCat precedent, Hill et al. 2016). Valid for the
-  majority of reaches (those below the width hinge) and kept as a sensitivity
-  column.
-- ``corridors_scaled`` — per-reach ``half_width = max(100 m, 1.5 * bankfull
-  width)``. Below ~order 6 the positional error dominates and this equals the
-  100 m set; large rivers widen with channel size so the corridor samples the
-  channel itself, not a fixed strip across it.
+- ``corridors_10m`` — fixed 10 m half-width floor: a minimum-width channel
+  sample corridor kept as a sensitivity column.
+- ``corridors_scaled`` — per-reach ``half_width = max(10 m, 1.5 * bankfull
+  width)``. Orders 1–4 floor at 10 m (1.5 × 5.3 m < 10 m); orders 5–10 all
+  clear the hinge, widening with channel size.
 
 Width-estimate priority (spec §"Implementation rule"): observed channel width
 (SWORD/GRWL) > modeled bankfull (Zarrabi et al. 2025) > order fallback
@@ -26,15 +23,25 @@ import geopandas as gpd
 from . import paths
 
 
-def order_bankfull_width_m(order):
-    """Fallback bankfull width (m) from Strahler order.
+# Module-level vectorized lookup into paths.WRF_HYDRO_BW_M (orders 1-10, clamped).
+_bw_lookup = np.vectorize(
+    lambda o: paths.WRF_HYDRO_BW_M[int(np.clip(round(o), 1, 10))],
+    otypes=[float],
+)
 
-    ``w(omega) = 2 m * 1.9^(omega-1)``: order-1 width ~2 m (Downing et al.
-    2012), growing ~1.9x per order (Leopold & Maddock 1953 hydraulic geometry
-    composed with Horton area ratios). Used only where observed/modeled width is
-    unavailable — order carries +/-1-order scatter, so it is the last resort.
+
+def order_bankfull_width_m(order):
+    """Bottom channel width (m) from Strahler order via the WRF-Hydro CONUS lookup.
+
+    Source: ``paths.WRF_HYDRO_BW_M`` (NCAR wrf_hydro_functions.py ``Mannings_Bw``,
+    LR 7/01/2020). These are trapezoidal channel BOTTOM widths, narrower than
+    bankfull surface width. Order is clamped to [1, 10].
+
+    Hinge note: with the 1.5× rule and a 10 m floor, orders 1–4 are pinned
+    (1.5 × 5.3 m = 7.95 m < 10 m); orders 5–10 all clear the hinge
+    (order 5: 1.5 × 7.4 m = 11.1 m; order 10: 1.5 × 110 m = 165 m).
     """
-    return paths.ORDER_WIDTH_BASE_M * paths.ORDER_WIDTH_RATIO ** (np.asarray(order, dtype=float) - 1)
+    return _bw_lookup(np.asarray(order, dtype=float))
 
 
 def scaled_half_width_m(width_est_m):
@@ -67,13 +74,45 @@ def _resolve_width_m(riv):
 
 
 def _to_equal_area(riv):
-    """Reproject to the equal-area CRS; a no-op when already there.
-
-    The CRS guard lets ``main()`` reproject the full frame once while keeping
-    each ``build_*`` function self-contained (and testable on lon/lat input).
-    """
-    if riv.crs is None or riv.crs != paths.CRS_EQUAL_AREA:
+    """Reproject to the equal-area CRS; a no-op when already there."""
+    if riv.crs is None:
+        raise ValueError(
+            "GeoDataFrame has no CRS set; assign one before calling build_corridors "
+            "or build_scaled_corridors"
+        )
+    if riv.crs != paths.CRS_EQUAL_AREA:
         riv = riv.to_crs(paths.CRS_EQUAL_AREA)
+    return riv
+
+
+def _merge_width_columns(riv: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Left-merge observed/modelled width columns; falls back gracefully when parquets absent.
+
+    Only called when building ``corridors_scaled`` — not needed for the fixed-100 m set.
+    Missing parquets are not an error: the width priority chain falls back to the
+    order estimate for those reaches.
+    """
+    n_before = len(riv)
+    for parquet, col in [
+        (paths.DERIVED / "channel_width_obs.parquet", "channel_width_obs"),
+        (paths.DERIVED / "bankfull.parquet", "bankfull_width"),
+    ]:
+        if not parquet.exists():
+            print(f"  {parquet.name} not found — {col} falls back to order estimate")
+            riv = riv.copy()
+            riv[col] = np.nan
+        else:
+            df = pd.read_parquet(parquet, columns=["COMID", col])
+            riv = riv.merge(df, on="COMID", how="left")
+        assert len(riv) == n_before, f"Merge on {col} changed row count"
+
+    obs_valid = riv["channel_width_obs"].notna() if "channel_width_obs" in riv.columns else pd.Series(False, index=riv.index)
+    bf_valid = riv["bankfull_width"].notna() if "bankfull_width" in riv.columns else pd.Series(False, index=riv.index)
+    print(
+        f"  Width coverage: channel_width_obs={obs_valid.sum():,}  "
+        f"bankfull_width={bf_valid.sum():,}  "
+        f"order-fallback={(~(obs_valid | bf_valid)).sum():,}"
+    )
     return riv
 
 
@@ -86,7 +125,7 @@ def build_corridors(riv: gpd.GeoDataFrame, half_width_m: float) -> gpd.GeoDataFr
 
 
 def build_scaled_corridors(riv: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    """Width-scaled corridors: ``half_width = max(100 m, 1.5 * bankfull width)``."""
+    """Width-scaled corridors: ``half_width = max(10 m, 1.5 * bankfull width)``."""
     riv = _to_equal_area(riv)
     half_width = scaled_half_width_m(_resolve_width_m(riv))
     out = riv[["COMID"]].copy()
@@ -99,7 +138,7 @@ def main(argv=None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--only",
-        choices=["scaled", "100m"],
+        choices=["scaled", "10m"],
         default=None,
         help="Build only one corridor set; omit to build both.",
     )
@@ -109,37 +148,25 @@ def main(argv=None) -> None:
     t0 = time.time()
     riv = gpd.read_file(paths.MERIT_RIV, columns=["COMID", "order"])
     print(f"  Read {len(riv):,} features in {time.time() - t0:.1f}s  (CRS: {riv.crs})")
-
-    # Merge real-width columns for the scaled-corridor priority chain.
-    n_before = len(riv)
-    cw = pd.read_parquet(paths.DERIVED / "channel_width_obs.parquet",
-                         columns=["COMID", "channel_width_obs"])
-    riv = riv.merge(cw, on="COMID", how="left")
-
-    bf = pd.read_parquet(paths.DERIVED / "bankfull.parquet",
-                         columns=["COMID", "bankfull_width"])
-    riv = riv.merge(bf, on="COMID", how="left")
-    assert len(riv) == n_before, (
-        f"Merge changed row count: {n_before} → {len(riv)}"
-    )
-    n_obs = riv["channel_width_obs"].notna().sum()
-    n_bf = riv["bankfull_width"].notna().sum()
-    print(f"  Width coverage: channel_width_obs={n_obs:,}  bankfull_width={n_bf:,} "
-          f"  order-fallback={n_before - max(n_obs, n_bf):,}")
-
     riv = riv.to_crs(paths.CRS_EQUAL_AREA)  # reproject once; build_* are no-ops below
 
     builders = [
-        ("corridors_100m", lambda r: build_corridors(r, paths.E_POS_M)),
+        ("corridors_10m", lambda r: build_corridors(r, paths.E_POS_M)),
         ("corridors_scaled", build_scaled_corridors),
     ]
+    riv_with_width = None  # loaded lazily; only needed for corridors_scaled
     for name, fn in builders:
         if args.only is not None and args.only != name.replace("corridors_", ""):
             print(f"Skipping {name} (--only {args.only})")
             continue
+        build_riv = riv
+        if name == "corridors_scaled":
+            if riv_with_width is None:
+                riv_with_width = _merge_width_columns(riv)
+            build_riv = riv_with_width
         t1 = time.time()
         print(f"Building {name} ...")
-        corr = fn(riv)
+        corr = fn(build_riv)
         out_path = paths.DERIVED / f"{name}.parquet"
         corr.to_parquet(out_path)
         elapsed = time.time() - t1

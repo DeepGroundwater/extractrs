@@ -24,12 +24,29 @@ OUT_STATS = Path("/home/tbindas/projects/ddr/data/statistics/merit_channel_attri
 CRS_EQUAL_AREA = "EPSG:5070"
 
 # Corridor buffer scaling (spec: specs/2026-07-04-corridor-buffer-scaling.md).
-# half_width = max(E_POS_M, ALPHA_HALF * bankfull_width). Below ~order 6 the
-# positional-error floor dominates and the scaled set equals the fixed 100 m set.
-E_POS_M = 100.0             # positional-error floor (Amatulli 2022; Hill et al. 2016)
-ALPHA_HALF = 1.5           # half-width per unit bankfull width (banks + hyporheic margin)
-ORDER_WIDTH_BASE_M = 2.0   # order-1 bankfull width, m (Downing et al. 2012)
-ORDER_WIDTH_RATIO = 1.9    # bankfull-width growth per Strahler order (L&M 1953 + Horton)
+# half_width = max(E_POS_M, ALPHA_HALF * bankfull_width).
+E_POS_M = 10.0              # minimum corridor half-width (m); floor for headwater streams
+ALPHA_HALF = 1.5            # half-width per unit bankfull width (banks + hyporheic margin)
+# WRF-Hydro CONUS order-based bottom-channel-width table (m), Strahler orders 1–10.
+# Source: NCAR/wrf_hydro_arcgis_preprocessor wrf_hydro_functions.py ``Mannings_Bw``
+# (LR 7/01/2020, confirmed JMC 6/18/21). These are trapezoidal channel BOTTOM widths
+# (narrower than bankfull surface width). Used as the order fallback in
+# ``_resolve_width_m`` when observed/modelled width columns are absent.
+# With the 1.5× hinge rule: floor dominates for orders 1–9 (1.5×26=39 m < 100 m);
+# only order 10 clears it (1.5×110=165 m). Observed/modelled widths remain the
+# primary corridor-scaling source.
+WRF_HYDRO_BW_M = {
+    1:   1.6,
+    2:   2.4,
+    3:   3.5,
+    4:   5.3,
+    5:   7.4,
+    6:  11.0,
+    7:  14.0,
+    8:  16.0,
+    9:  26.0,
+    10: 110.0,
+}
 
 CROSSWALK_BUFFER_M = 300.0      # NHD->MERIT matching envelope (MERIT lateral error 100-300 m)
 CROSSWALK_TOP_K = 40            # mirror Wade et al. 2025 table shape

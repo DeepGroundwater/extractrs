@@ -40,8 +40,8 @@ def _parse_region_json(path: Path) -> pd.DataFrame:
                     # ijson returns Decimal for JSON numbers; cast to float.
                     "corridor_impervious": float(val) if val is not None else None,
                 })
-    except (ijson.common.IncompleteJSONError, Exception):
-        # Truncated file: keep whatever was parsed before the cut.
+    except ijson.common.IncompleteJSONError:
+        # Truncated download: keep whatever records were parsed before the cut.
         pass
     if not rows:
         return pd.DataFrame(columns=["foreign_id", "corridor_impervious"])
