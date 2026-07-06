@@ -206,14 +206,50 @@ def _tile_window(da: xr.DataArray, bounds, buf_m: float = 500.0):
 
 # ── corridor-mean (extractrs) ──────────────────────────────────────────────────
 
-def _corridor_mean_zs(zs_da: xr.DataArray, riv: gpd.GeoDataFrame) -> pd.DataFrame:
-    """Compute extractrs corridor-mean of ZS raster over 100 m corridors.
+def zonal_stats_corridors(
+    da: xr.DataArray,
+    corridors: gpd.GeoDataFrame,
+    stat: str = "mean",
+    id_col: str = "COMID",
+) -> pd.DataFrame:
+    """Raster zonal statistics over corridor polygons via the extractrs API.
 
-    Processes by pfaf-4 tile to keep peak memory bounded.  Corridors are
-    reprojected once to the ZS native CRS (WGS-84 Albers, datum shift <1 m).
+    This is the channel-burning extraction path: corridor polygons are
+    rasterized against *da* and the requested statistic is computed per
+    polygon.  Corridors are reprojected to the raster CRS if needed.
+
+    Parameters
+    ----------
+    da:        DataArray with a CRS set (``da.rio.crs``).
+    corridors: GeoDataFrame of corridor polygons with an *id_col* column.
+    stat:      Aggregation statistic passed to ``extrs.zonal_stats`` (e.g.
+               ``"mean"``, ``"sum"``, ``"max"``).
+    id_col:    Name of the identifier column in *corridors*.
+
+    Returns
+    -------
+    DataFrame with columns [id_col, <da.name or 'value'>].
     """
-    import extractrs  # noqa: F401
+    import extractrs  # noqa: F401 — registers .extrs accessor
 
+    raster_crs = da.rio.crs
+    if raster_crs is None:
+        raise ValueError("DataArray has no CRS; set it with da.rio.write_crs() first")
+    if corridors.crs != raster_crs:
+        corridors = corridors.to_crs(raster_crs)
+
+    var_name = da.name or "value"
+    ds = da.to_dataset(name=var_name)
+    result = ds.extrs.zonal_stats(corridors, stat=stat, id_col=id_col)
+    return result[var_name].to_dataframe().reset_index()[[id_col, var_name]]
+
+
+def _corridor_mean_zs(zs_da: xr.DataArray, riv: gpd.GeoDataFrame) -> pd.DataFrame:
+    """Corridor-mean of the ZS raster over 10 m corridors, tiled by pfaf-4.
+
+    Processes by pfaf-4 tile to keep peak memory bounded.  Delegates each tile
+    to ``zonal_stats_corridors``.
+    """
     corr = gpd.read_parquet(paths.DERIVED / "corridors_10m.parquet")
     corr = corr.to_crs(zs_da.rio.crs)
     riv_native = riv.to_crs(zs_da.rio.crs)
@@ -233,10 +269,9 @@ def _corridor_mean_zs(zs_da: xr.DataArray, riv: gpd.GeoDataFrame) -> pd.DataFram
         if tile_da.size == 0:
             continue
 
-        ds = tile_da.to_dataset(name="wtd")
+        tile_da = tile_da.rename("wtd")
         try:
-            result = ds.extrs.zonal_stats(tile_corr, stat="mean", id_col="COMID")
-            df = result["wtd"].to_dataframe().reset_index()[["COMID", "wtd"]]
+            df = zonal_stats_corridors(tile_da, tile_corr, stat="mean", id_col="COMID")
             frames.append(df)
         except Exception as exc:
             print(f"  WARNING: zonal_stats failed on tile {tile_id}: {exc!r}")

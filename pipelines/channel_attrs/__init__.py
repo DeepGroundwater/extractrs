@@ -8,6 +8,7 @@ Import these directly for use in notebooks, scripts, or downstream pipelines:
         order_bankfull_width_m,
         scaled_half_width_m,
         sample_along_lines,
+        zonal_stats_corridors,
         weighted_transfer,
         assemble,
     )
@@ -23,7 +24,7 @@ from .corridors import (
     order_bankfull_width_m,
     scaled_half_width_m,
 )
-from .wtd_sample import sample_along_lines
+from .wtd_sample import sample_along_lines, zonal_stats_corridors
 from .transfer import weighted_transfer
 from .assemble import assemble
 
@@ -33,6 +34,7 @@ __all__ = [
     "order_bankfull_width_m",
     "scaled_half_width_m",
     "sample_along_lines",
+    "zonal_stats_corridors",
     "weighted_transfer",
     "assemble",
 ]
