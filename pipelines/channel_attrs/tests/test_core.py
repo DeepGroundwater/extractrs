@@ -6,7 +6,17 @@ import xarray as xr
 import pytest
 from shapely.geometry import LineString
 
+import pipelines.channel_attrs as ca
 from pipelines.channel_attrs import sample_along_lines, weighted_transfer
+
+
+def test_public_api_exports_all_symbols():
+    """Every name listed in __all__ must be importable and callable."""
+    import inspect
+    for name in ca.__all__:
+        obj = getattr(ca, name, None)
+        assert obj is not None, f"__all__ lists '{name}' but it is not on the package"
+        assert callable(obj), f"'{name}' is not callable"
 
 
 # ── sample_along_lines ────────────────────────────────────────────────────────

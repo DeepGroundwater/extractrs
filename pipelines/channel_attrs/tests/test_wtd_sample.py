@@ -5,7 +5,7 @@ import xarray as xr
 import geopandas as gpd
 from shapely.geometry import LineString, box
 
-from pipelines.channel_attrs.wtd_sample import sample_along_lines, zonal_stats_corridors
+from pipelines.channel_attrs import sample_along_lines, zonal_stats_corridors
 
 
 def _make_gradient_da():
